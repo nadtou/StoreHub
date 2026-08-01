@@ -1,0 +1,6 @@
+{
+  "name": "StoreHub",
+  "description": "StoreHub - Premium Fashion Boutique Showcase with Gemini AI Personal Stylist and Visual Search",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

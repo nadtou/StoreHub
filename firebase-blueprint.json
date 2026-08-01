@@ -1,0 +1,165 @@
+{
+  "collections": {
+    "boutiques": {
+      "documents": {
+        "boutique_1": {
+          "fields": {
+            "id": "boutique_1",
+            "ownerId": "owner_1",
+            "name": "Atelier Noir",
+            "slug": "atelier-noir",
+            "description": "Minimalist high-fashion and structured silhouettes.",
+            "logo": "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80",
+            "coverImage": "https://images.unsplash.com/photo-1441986300917-64674bd600d8?auto=format&fit=crop&w=1200&q=80",
+            "categories": ["robes", "outerwear", "hauts"],
+            "tags": ["Minimaliste", "Soutenable"],
+            "social": {
+              "instagram": "atelier_noir_paris",
+              "website": "https://atelier-noir.com"
+            },
+            "stats": {
+              "productsCount": 2,
+              "followersCount": 850,
+              "viewsCount": 12400
+            },
+            "isVerified": true,
+            "isFeatured": true,
+            "createdAt": "2026-06-27T00:00:00Z",
+            "updatedAt": "2026-06-27T00:00:00Z"
+          }
+        },
+        "boutique_2": {
+          "fields": {
+            "id": "boutique_2",
+            "ownerId": "owner_2",
+            "name": "Maison Dorée",
+            "slug": "maison-doree",
+            "description": "Exquisite gold-plated jewelry and fluid warm luxury items.",
+            "logo": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=400&q=80",
+            "coverImage": "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=1200&q=80",
+            "categories": ["bijoux", "outerwear", "robes"],
+            "tags": ["Luxe", "Solaire"],
+            "social": {
+              "instagram": "maison_doree",
+              "website": "https://maison-doree.com"
+            },
+            "stats": {
+              "productsCount": 2,
+              "followersCount": 620,
+              "viewsCount": 9800
+            },
+            "isVerified": true,
+            "isFeatured": true,
+            "createdAt": "2026-06-27T00:00:00Z",
+            "updatedAt": "2026-06-27T00:00:00Z"
+          }
+        },
+        "boutique_3": {
+          "fields": {
+            "id": "boutique_3",
+            "ownerId": "owner_3",
+            "name": "Koben",
+            "slug": "koben",
+            "description": "Avant-garde technical outerwear and modular accessories.",
+            "logo": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80",
+            "coverImage": "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=1200&q=80",
+            "categories": ["hauts", "accessoires", "outerwear"],
+            "tags": ["Avant-Garde", "Technique"],
+            "social": {
+              "instagram": "koben_nordic",
+              "website": "https://koben-nordic.com"
+            },
+            "stats": {
+              "productsCount": 2,
+              "followersCount": 430,
+              "viewsCount": 7500
+            },
+            "isVerified": true,
+            "isFeatured": false,
+            "createdAt": "2026-06-27T00:00:00Z",
+            "updatedAt": "2026-06-27T00:00:00Z"
+          }
+        }
+      }
+    },
+    "products": {
+      "documents": {
+        "prod_1": {
+          "fields": {
+            "id": "prod_1",
+            "boutiqueId": "boutique_1",
+            "boutiqueName": "Atelier Noir",
+            "boutiqueLogo": "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80",
+            "name": "Robe Soie Ivoire",
+            "description": "An ethereal silk slip dress with a raw asymmetrical edge and delicate back detailing.",
+            "price": 290,
+            "currency": "EUR",
+            "category": "robes",
+            "styles": ["Minimaliste", "Élégant"],
+            "colors": ["Ivoire", "Blanc"],
+            "sizes": ["S", "M", "L"],
+            "materials": ["Mulberry Silk"],
+            "isAvailable": true,
+            "isFeatured": true,
+            "createdAt": "2026-06-27T00:00:00Z",
+            "updatedAt": "2026-06-27T00:00:00Z"
+          }
+        },
+        "prod_2": {
+          "fields": {
+            "id": "prod_2",
+            "boutiqueId": "boutique_1",
+            "boutiqueName": "Atelier Noir",
+            "boutiqueLogo": "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80",
+            "name": "Trench Architectonique",
+            "description": "Deconstructed duster jacket featuring broad structured shoulders and contrasting belt.",
+            "price": 420,
+            "currency": "EUR",
+            "category": "outerwear",
+            "styles": ["Minimaliste", "Avant-Garde"],
+            "colors": ["Noir Charbon"],
+            "sizes": ["S", "M", "L", "XL"],
+            "materials": ["Gabardine de coton enduit"],
+            "isAvailable": true,
+            "isFeatured": true,
+            "createdAt": "2026-06-27T00:00:00Z",
+            "updatedAt": "2026-06-27T00:00:00Z"
+          }
+        }
+      }
+    },
+    "users": {
+      "documents": {
+        "user_demo_1": {
+          "fields": {
+            "uid": "user_demo_1",
+            "email": "client@storehub.com",
+            "displayName": "Marie Laurent",
+            "role": "client",
+            "photoURL": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80",
+            "preferences": {
+              "styles": ["Minimaliste", "Élégant"],
+              "sizes": ["M", "38"],
+              "favoriteCategories": ["robes", "outerwear"]
+            },
+            "stats": {
+              "favoritesCount": 2,
+              "viewedProducts": 14
+            },
+            "createdAt": "2026-06-27T00:00:00Z"
+          }
+        },
+        "user_demo_2": {
+          "fields": {
+            "uid": "user_demo_2",
+            "email": "atelier@storehub.com",
+            "displayName": "Boutique Atelier Noir",
+            "role": "boutique",
+            "photoURL": "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=200&q=80",
+            "createdAt": "2026-06-27T00:00:00Z"
+          }
+        }
+      }
+    }
+  }
+}
