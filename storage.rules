@@ -1,0 +1,64 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validImage() {
+      return request.resource != null
+        && request.resource.size <= 1 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    function isAdminClaim() {
+      return signedIn() && request.auth.token.role == "admin";
+    }
+
+    function validVerificationDocument(ownerId, boutiqueId) {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/jpeg|image/png|image/webp')
+        && request.resource.metadata.ownerId == ownerId
+        && request.resource.metadata.boutiqueId == boutiqueId
+        && request.resource.metadata.documentType == "legal-verification";
+    }
+
+    // Legacy public media remain readable, but all new writes use an owner UID
+    // in the path so authorization does not depend on another Firebase service.
+    match /boutiques/{boutiqueId}/{mediaType}/{fileName} {
+      allow read: if true;
+    }
+
+    match /boutique-media/{ownerId}/{boutiqueId}/{mediaType}/{fileName} {
+      allow read: if true;
+      allow create, update: if signedIn()
+        && request.auth.uid == ownerId
+        && request.resource.metadata.boutiqueId == boutiqueId
+        && validImage();
+      allow delete: if signedIn() && request.auth.uid == ownerId;
+    }
+
+    // Legal documents are never public. Owners can submit and remove their own
+    // files; an administrator may read them only through a Firebase Auth custom
+    // claim (`role: admin`).
+    match /boutique-verification/{ownerId}/{boutiqueId}/{fileName} {
+      allow read: if signedIn() && (request.auth.uid == ownerId || isAdminClaim());
+      allow create: if signedIn()
+        && request.auth.uid == ownerId
+        && fileName.matches('registration-[0-9]+\\.(pdf|jpg|png|webp)')
+        && validVerificationDocument(ownerId, boutiqueId);
+      allow update: if false;
+      allow delete: if signedIn() && request.auth.uid == ownerId;
+    }
+
+    match /users/{userId}/avatars/{fileName} {
+      allow read: if true;
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && validImage();
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+  }
+}

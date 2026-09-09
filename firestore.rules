@@ -1,0 +1,252 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    function isApprovedAccount() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin"
+          || !("accountStatus" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == "approved"
+        );
+    }
+
+    function ownsBoutique(boutiqueId) {
+      return isApprovedAccount()
+        && exists(/databases/$(database)/documents/boutiques/$(boutiqueId))
+        && get(/databases/$(database)/documents/boutiques/$(boutiqueId)).data.ownerId == request.auth.uid;
+    }
+
+    function validPublicBoutiqueAnalyticsUpdate() {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return request.resource.data.ownerId == resource.data.ownerId
+        && affected.hasOnly(["stats", "visibilityDaily", "updatedAt"])
+        && (
+          (
+            affected.hasAny(["stats"])
+            && request.resource.data.stats.diff(resource.data.stats).affectedKeys()
+              .hasOnly(["viewsCount"])
+            && request.resource.data.stats.viewsCount == resource.data.stats.viewsCount + 1
+          )
+          || (!affected.hasAny(["stats"]) && affected.hasOnly(["visibilityDaily"]))
+        );
+    }
+
+    function validPublicProductViewUpdate() {
+      return request.resource.data.boutiqueId == resource.data.boutiqueId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["stats", "updatedAt"])
+        && request.resource.data.stats.diff(resource.data.stats).affectedKeys()
+          .hasOnly(["views"])
+        && request.resource.data.stats.views == resource.data.stats.views + 1;
+    }
+
+    function validNewBoutique(boutiqueId) {
+      return request.resource.data.keys().hasAll([
+          "id", "ownerId", "name", "slug", "logo", "coverImage",
+          "location", "categories", "tags", "social", "stats",
+          "isVerified", "isFeatured", "isSuspended", "verificationStatus",
+          "verificationSubmittedAt", "createdAt", "updatedAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "id", "ownerId", "name", "slug", "description", "logo", "coverImage",
+          "location", "categories", "tags", "social", "stats",
+          "isVerified", "isFeatured", "isSuspended", "verificationStatus",
+          "verificationSubmittedAt", "createdAt", "updatedAt"
+        ])
+        && request.resource.data.id == boutiqueId
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.isVerified == false
+        && request.resource.data.isFeatured == false
+        && request.resource.data.isSuspended == false
+        && request.resource.data.verificationStatus == "pending";
+    }
+
+    function validOwnerBoutiqueUpdate() {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return request.resource.data.ownerId == resource.data.ownerId
+        && affected.hasOnly([
+          "name", "slug", "description", "logo", "coverImage", "location",
+          "categories", "tags", "social", "stats", "visibilityDaily", "updatedAt"
+        ]);
+    }
+
+    match /boutiques/{boutiqueId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && validNewBoutique(boutiqueId);
+      allow update: if (
+          ownsBoutique(boutiqueId)
+          && validOwnerBoutiqueUpdate()
+        ) || isAdmin() || validPublicBoutiqueAnalyticsUpdate();
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if ownsBoutique(request.resource.data.boutiqueId) || isAdmin();
+      allow update: if (
+          ownsBoutique(resource.data.boutiqueId)
+          && request.resource.data.boutiqueId == resource.data.boutiqueId
+        ) || isAdmin() || validPublicProductViewUpdate();
+      allow delete: if ownsBoutique(resource.data.boutiqueId) || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if (signedIn() && request.auth.uid == userId) || isAdmin();
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role in ["client", "boutique"]
+        && request.resource.data.accountStatus == "pending"
+        && request.resource.data.approvalSubmittedAt is string
+        && (
+          request.resource.data.role == "client"
+          || (
+            request.resource.data.boutiqueId == "boutique_" + request.auth.uid
+            && existsAfter(/databases/$(database)/documents/boutiqueApplications/$(request.resource.data.boutiqueId))
+            && getAfter(/databases/$(database)/documents/boutiqueApplications/$(request.resource.data.boutiqueId)).data.ownerId == request.auth.uid
+            && getAfter(/databases/$(database)/documents/boutiqueApplications/$(request.resource.data.boutiqueId)).data.status == "pending"
+          )
+        );
+      allow update: if (
+          signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "displayName", "photoURL", "city", "preferences", "stats",
+            "followedBoutiqueIds", "favoriteProductIds"
+          ])
+        ) || isAdmin();
+      allow delete: if false;
+    }
+
+    // Private legal application. Unlike the public boutique document, this
+    // record contains the protected Storage object path and is never public.
+    match /boutiqueApplications/{boutiqueId} {
+      allow read: if signedIn() && (
+        resource.data.ownerId == request.auth.uid || isAdmin()
+      );
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "boutiqueId", "ownerId", "status", "verificationDocName",
+          "verificationDocPath", "submittedAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "boutiqueId", "ownerId", "status", "verificationDocName",
+          "verificationDocPath", "submittedAt"
+        ])
+        && request.resource.data.boutiqueId == boutiqueId
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == "pending"
+        && request.resource.data.verificationDocName is string
+        && request.resource.data.verificationDocPath is string
+        && request.resource.data.verificationDocPath.matches(
+          "boutique-verification/" + request.auth.uid + "/" + boutiqueId + "/registration-[0-9]+\\.(pdf|jpg|png|webp)"
+        );
+      allow update, delete: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if signedIn() && (
+        (isApprovedAccount() && resource.data.clientId == request.auth.uid)
+        || ownsBoutique(resource.data.boutiqueId)
+        || isAdmin()
+      );
+      allow create: if signedIn()
+        && isApprovedAccount()
+        && request.resource.data.id == orderId
+        && request.resource.data.boutiqueId is string
+        && request.resource.data.clientName is string
+        && (
+          ownsBoutique(request.resource.data.boutiqueId)
+          || (
+            request.resource.data.source == "reservation"
+            && request.resource.data.clientId == request.auth.uid
+          )
+        );
+      allow update, delete: if ownsBoutique(resource.data.boutiqueId) || isAdmin();
+    }
+
+    match /collections/{collectionId} {
+      allow read: if true;
+      allow create: if ownsBoutique(request.resource.data.boutiqueId) || isAdmin();
+      allow update, delete: if ownsBoutique(resource.data.boutiqueId) || isAdmin();
+    }
+
+    function ownsMessageBoutique(data) {
+      return isApprovedAccount() && data.boutiqueOwnerId == request.auth.uid;
+    }
+
+    function isChatParticipant(data) {
+      return isApprovedAccount()
+        && (data.clientId == request.auth.uid || ownsMessageBoutique(data));
+    }
+
+    function validNewMessage(data) {
+      return data.keys().hasAll([
+          "id", "chatId", "clientId", "clientName", "clientPhoto",
+          "boutiqueId", "boutiqueOwnerId", "boutiqueName", "boutiqueLogo", "senderId",
+          "senderName", "senderRole", "text", "createdAt"
+        ])
+        && data.keys().hasOnly([
+          "id", "chatId", "clientId", "clientName", "clientPhoto",
+          "boutiqueId", "boutiqueOwnerId", "boutiqueName", "boutiqueLogo", "senderId",
+          "senderName", "senderRole", "text", "createdAt"
+        ])
+        && data.id is string
+        && data.chatId is string
+        && data.clientId is string
+        && data.boutiqueId is string
+        && data.boutiqueOwnerId is string
+        && data.senderId is string
+        && data.senderRole is string
+        && data.text is string
+        && data.createdAt is string
+        && data.text.size() > 0
+        && data.text.size() <= 4000
+        && data.chatId == data.clientId + "_" + data.boutiqueId
+        && exists(/databases/$(database)/documents/boutiques/$(data.boutiqueId))
+        && data.boutiqueOwnerId == get(/databases/$(database)/documents/boutiques/$(data.boutiqueId)).data.ownerId
+        && (
+          (data.senderRole == "client"
+            && data.senderId == request.auth.uid
+            && data.clientId == request.auth.uid)
+          ||
+          (data.senderRole == "boutique"
+            && data.senderId == request.auth.uid
+            && ownsMessageBoutique(data))
+        );
+    }
+
+    match /chats/{chatMessageId} {
+      allow read: if isChatParticipant(resource.data) || isAdmin();
+      allow create: if signedIn()
+        && isApprovedAccount()
+        && chatMessageId == request.resource.data.id
+        && validNewMessage(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

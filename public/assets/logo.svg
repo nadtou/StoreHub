@@ -1,0 +1,91 @@
+<svg width="600" height="600" viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Metallic Gold Gradient -->
+    <linearGradient id="goldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F7E096" />
+      <stop offset="30%" stop-color="#D4AF37" />
+      <stop offset="70%" stop-color="#AA7C11" />
+      <stop offset="100%" stop-color="#F0D475" />
+    </linearGradient>
+
+    <!-- Metallic Gold Stroke Gradient -->
+    <linearGradient id="goldStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#AA7C11" />
+      <stop offset="50%" stop-color="#F7E096" />
+      <stop offset="100%" stop-color="#D4AF37" />
+    </linearGradient>
+
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&amp;display=swap');
+      .brand-text {
+        font-family: 'Cinzel', 'Playfair Display', 'Georgia', serif;
+        font-weight: 600;
+        fill: url(#goldGradient);
+        font-size: 25px;
+        letter-spacing: 0.22em;
+      }
+    </style>
+  </defs>
+
+  <!-- BACKGROUND ORBITAL GLOBE WIREFRAME NETWORK -->
+  <g opacity="0.75">
+    <!-- Outer Main Circle -->
+    <circle cx="150" cy="115" r="76" stroke="url(#goldGradient)" stroke-width="1.2" opacity="0.6" />
+
+    <!-- Latitude Ellipses -->
+    <ellipse cx="150" cy="115" rx="76" ry="32" stroke="url(#goldGradient)" stroke-width="1.0" opacity="0.45" />
+    <ellipse cx="150" cy="115" rx="76" ry="56" stroke="url(#goldGradient)" stroke-width="1.0" opacity="0.45" />
+
+    <!-- Longitude Ellipses -->
+    <ellipse cx="150" cy="115" rx="36" ry="76" stroke="url(#goldGradient)" stroke-width="1.0" opacity="0.45" />
+    <ellipse cx="150" cy="115" rx="58" ry="76" stroke="url(#goldGradient)" stroke-width="0.8" opacity="0.35" />
+
+    <!-- Orbital Network Node Dots (Golden Spheres) -->
+    <circle cx="150" cy="39" r="4" fill="url(#goldGradient)" />
+    <circle cx="150" cy="191" r="4" fill="url(#goldGradient)" />
+    <circle cx="74" cy="115" r="4" fill="url(#goldGradient)" />
+    <circle cx="226" cy="115" r="4" fill="url(#goldGradient)" />
+    <circle cx="96" cy="61" r="3.5" fill="url(#goldGradient)" />
+    <circle cx="204" cy="61" r="3.5" fill="url(#goldGradient)" />
+    <circle cx="85" cy="151" r="3.5" fill="url(#goldGradient)" />
+    <circle cx="215" cy="151" r="3.5" fill="url(#goldGradient)" />
+  </g>
+
+  <!-- STOREFRONT BOUTIQUE EMBLEM -->
+  <g transform="translate(0, -2)">
+    <!-- Awning Top Bar -->
+    <path d="M 100,56 H 200" stroke="url(#goldGradient)" stroke-width="2.5" stroke-linecap="round" />
+    
+    <!-- Awning Slope Frame -->
+    <path d="M 100,56 L 90,74 H 210 L 200,56 Z" fill="none" stroke="url(#goldGradient)" stroke-width="2" stroke-linejoin="round" />
+
+    <!-- Awning Vertical Stripes -->
+    <path d="M 114,56 L 114,74" stroke="url(#goldGradient)" stroke-width="1.2" />
+    <path d="M 138,56 L 138,74" stroke="url(#goldGradient)" stroke-width="1.2" />
+    <path d="M 162,56 L 162,74" stroke="url(#goldGradient)" stroke-width="1.2" />
+    <path d="M 186,56 L 186,74" stroke="url(#goldGradient)" stroke-width="1.2" />
+
+    <!-- Scalloped Awning Bottom Edges (5 Rounded Arches) -->
+    <path d="M 90,74 C 90,82 114,82 114,74 C 114,82 138,82 138,74 C 138,82 162,82 162,74 C 162,82 186,82 186,74 C 186,82 210,82 210,74" 
+          fill="none" stroke="url(#goldGradient)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Main Store Box Frame -->
+    <path d="M 100,78 V 144 H 200 V 78" fill="none" stroke="url(#goldGradient)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- CLOTHES HANGER -->
+    <!-- Hook -->
+    <path d="M 150,96 C 150,90 156,90 154,87 C 152,84 147,85 149,89" fill="none" stroke="url(#goldGradient)" stroke-width="1.8" stroke-linecap="round" />
+    <!-- Triangular Frame -->
+    <path d="M 134,104 L 150,96 L 166,104 Z" fill="none" stroke="url(#goldGradient)" stroke-width="1.8" stroke-linejoin="round" />
+
+    <!-- SHORT-SLEEVED V-NECK T-SHIRT -->
+    <!-- Outer Contour & Sleeves -->
+    <path d="M 134,104 L 117,112 L 123,126 L 130,120 V 142 H 170 V 120 L 177,126 L 183,112 L 166,104" 
+          fill="url(#goldGradient)" stroke="url(#goldStroke)" stroke-width="1.5" stroke-linejoin="round" opacity="0.95" />
+    <!-- V-Neck Collar Cutout -->
+    <path d="M 142,104 L 150,114 L 158,104 Z" fill="#070707" stroke="url(#goldGradient)" stroke-width="1.2" />
+  </g>
+
+  <!-- BRAND NAME TYPOGRAPHY BELOW -->
+  <text x="151" y="232" class="brand-text" text-anchor="middle">STORE HUB</text>
+</svg>
