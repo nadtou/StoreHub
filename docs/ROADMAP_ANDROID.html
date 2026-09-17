@@ -202,8 +202,8 @@
         <div class="verdict">
           <p class="eyebrow">Verdict actuel</p>
           <h3 id="verdict-title">Non, l'application n'est pas encore prête à 100 % pour le marché Android.</h3>
-          <p>La base se compile et les règles Firebase existent, mais la conversion mobile, les tests automatisés et plusieurs contrôles de sécurité restent à terminer.</p>
-          <p class="blocking"><strong>Blocages de lancement :</strong> projet Android absent, API mobile non configurée, aucun test automatisé et paquet initial trop lourd.</p>
+          <p>La base se compile et les règles Firebase existent, mais la conversion mobile, la couverture des parcours critiques et plusieurs contrôles de sécurité restent à terminer.</p>
+          <p class="blocking"><strong>Blocages de lancement :</strong> projet Android absent, API mobile non configurée, parcours critiques encore non automatisés et paquet initial trop lourd.</p>
         </div>
       </section>
 
@@ -247,7 +247,7 @@
       {id:"1.2",phase:1,title:"Contrôle TypeScript",desc:"Vérifier toutes les erreurs de types avant chaque livraison.",priority:"p0",duration:"Fait",status:"done",accept:"La commande de contrôle se termine avec le code 0.",depends:"Aucune"},
       {id:"1.3",phase:1,title:"Construction de production",desc:"Produire le frontend et le serveur sans erreur.",priority:"p0",duration:"Fait",status:"done",accept:"Les artefacts de production sont générés et démarrent correctement.",depends:"1.2"},
       {id:"1.4",phase:1,title:"Corriger les vulnérabilités npm",desc:"Traiter 4 alertes élevées et 5 modérées sans casser l'application.",priority:"p0",duration:"Fait",status:"done",accept:"Aucune vulnérabilité élevée en dépendances de production.",depends:"1.3"},
-      {id:"1.5",phase:1,title:"Ajouter la chaîne de vérification",desc:"Exécuter types, tests, construction et audit avec une commande unique.",priority:"p1",duration:"0,5 j",status:"todo",accept:"Un échec bloque la livraison et donne un message exploitable.",depends:"1.4"},
+      {id:"1.5",phase:1,title:"Ajouter la chaîne de vérification",desc:"Exécuter types, tests, construction et audit avec une commande unique.",priority:"p1",duration:"Fait",status:"done",accept:"Un échec bloque la livraison et donne un message exploitable.",depends:"1.4"},
 
       {id:"2.1",phase:2,title:"Tester inscription et connexion client",desc:"Email, Google, vérification, reconnexion et mot de passe oublié.",priority:"p0",duration:"1 j",status:"todo",accept:"Chaque scénario réussit et chaque erreur est compréhensible.",depends:"1.5"},
       {id:"2.2",phase:2,title:"Tester l'inscription boutique",desc:"Dossier, documents, attente, acceptation, refus et rollback Auth.",priority:"p0",duration:"1 j",status:"todo",accept:"Une boutique non approuvée ne peut pas entrer dans sa console.",depends:"2.1"},
