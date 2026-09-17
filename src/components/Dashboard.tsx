@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Boutique, ManualOrder, Product, VisibilityPoint } from '../types';
+import { Boutique, ManualOrder, ModerationNote, Product, VisibilityPoint } from '../types';
 import {
   AlertCircle,
   BookOpen,
   CalendarDays,
+  BellRing,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -41,6 +42,9 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
   const [activeBoutique, setActiveBoutique] = useState<Boutique | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<ManualOrder[]>([]);
+  const [moderationNotes, setModerationNotes] = useState<ModerationNote[]>([]);
+  const [moderationNotesError, setModerationNotesError] = useState('');
+  const [moderationNoteBusyId, setModerationNoteBusyId] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<VisibilityPoint[]>([]);
   const [isFenncoOpen, setIsFenncoOpen] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
@@ -79,6 +83,32 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
     fetchLiveData();
     const interval = window.setInterval(fetchLiveData, 5 * 60 * 1000);
     return () => window.clearInterval(interval);
+  }, [boutiqueId]);
+
+  // Private moderation observations are refreshed independently so a new
+  // administrative comment appears without reloading the whole dashboard.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchModerationNotes = async () => {
+      try {
+        const response = await firebaseAuthenticatedFetch(`/api/boutiques/${encodeURIComponent(boutiqueId)}/moderation-notes`);
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.error || 'Impossible de charger les observations administratives.');
+        if (!cancelled) {
+          setModerationNotes(Array.isArray(payload) ? payload : []);
+          setModerationNotesError('');
+        }
+      } catch (error) {
+        if (!cancelled) setModerationNotesError(error instanceof Error ? error.message : 'Impossible de charger les observations administratives.');
+      }
+    };
+
+    fetchModerationNotes();
+    const interval = window.setInterval(fetchModerationNotes, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [boutiqueId]);
 
   // Keep the order counter fresh without reloading the heavier dashboard data.
@@ -127,6 +157,28 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
     }
   };
 
+  const resolveModerationNote = async (noteId: string) => {
+    setModerationNoteBusyId(noteId);
+    setModerationNotesError('');
+    try {
+      const response = await firebaseAuthenticatedFetch(
+        `/api/boutiques/${encodeURIComponent(boutiqueId)}/moderation-notes/${encodeURIComponent(noteId)}/status`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'resolved' }),
+        },
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Impossible de marquer cette observation comme traitée.');
+      setModerationNotes(current => current.map(note => note.id === noteId ? payload as ModerationNote : note));
+    } catch (error) {
+      setModerationNotesError(error instanceof Error ? error.message : 'Impossible de marquer cette observation comme traitée.');
+    } finally {
+      setModerationNoteBusyId(null);
+    }
+  };
+
   const productMetrics = useMemo(() => products.reduce((metrics, product) => {
     if (product.isAvailable) metrics.activeProductsCount += 1;
     metrics.totalViews += product.stats.views;
@@ -143,6 +195,7 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
     ? Math.round((activeProductsCount / products.length) * 100)
     : 0;
   const boutiqueViews = activeBoutique?.stats?.viewsCount ?? 0;
+  const openModerationNotes = moderationNotes.filter(note => note.status === 'open');
   const categoryCounts = useMemo(() => products.reduce<Record<string, number>>((counts, product) => {
     counts[product.category] = (counts[product.category] || 0) + 1;
     return counts;
@@ -286,6 +339,20 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
 
   return (
     <div className="w-full min-h-full max-w-6xl mx-auto px-4 sm:px-6 pt-[45px] pb-6 animate-fadeIn">
+      <div className="sticky top-[45px] z-[70] mb-2 flex justify-end pointer-events-none">
+        <button
+          type="button"
+          onClick={() => setIsFenncoOpen(true)}
+          className="pointer-events-auto flex min-h-10 items-center gap-2 rounded-xl border border-[#D4AF37]/45 bg-[#0F0F0F]/95 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-[#D4AF37] shadow-[0_8px_24px_rgba(0,0,0,0.55)] backdrop-blur-md transition-all duration-200 hover:border-[#D4AF37] hover:bg-[#17130A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]/60 active:scale-95"
+          aria-label="Ouvrir FENNCO IA"
+          title="Ouvrir FENNCO IA"
+        >
+          <FennecMascot size="sm" showGlow={false} />
+          <span>FENNCO IA</span>
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
+        </button>
+      </div>
+
       {/* Locked boutique profile zone, intentionally unchanged. */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-6 border-b border-luxury-border/60 gap-4">
         <div className="flex items-center gap-4 flex-1 min-w-0">
@@ -310,40 +377,55 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
         </div>
       </div>
 
-      {/* Locked FENNCO IA zone, intentionally unchanged. */}
-      <div className="mb-8 flex justify-center w-full">
-        <button
-          onClick={() => setIsFenncoOpen(true)}
-          className="relative w-full bg-[#0A0A0A] border border-[#D4AF37]/70 hover:border-[#D4AF37] px-4 sm:px-5 py-3 shadow-[0_0_20px_rgba(212,175,55,0.2)] hover:shadow-[0_0_30px_rgba(212,175,55,0.4)] hover:scale-[1.008] active:scale-[0.985] transition-all duration-300 flex items-center justify-between gap-3 cursor-pointer group rounded-none overflow-hidden"
-        >
-          <div className="absolute top-0 left-0 right-0 h-[1.5px] bg-gradient-to-r from-transparent via-[#D4AF37] to-transparent opacity-80 group-hover:opacity-100 transition-opacity" />
-          <div className="flex items-center gap-3 min-w-0 flex-1">
-            <FennecMascot size="md" showGlow={true} className="group-hover:scale-105 transition-transform shrink-0" />
-            <div className="text-left min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="serif-title text-base sm:text-xl text-[#D4AF37] font-normal tracking-wide leading-none truncate block">
-                  FENNCO IA
-                </span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-              </div>
-              <p className="font-mono text-[9px] sm:text-[10px] text-zinc-300 uppercase tracking-widest mt-0.5 truncate">
-                Votre conseiller intelligent
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-mono text-[#D4AF37] bg-[#D4AF37]/10 px-2.5 sm:px-3 py-1.5 border border-[#D4AF37]/30 group-hover:bg-[#D4AF37] group-hover:text-black transition-colors shrink-0 font-bold uppercase tracking-wider">
-            <span>Analyser</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </div>
-        </button>
-      </div>
-
       <FenncoAICenter
         isOpen={isFenncoOpen}
         onClose={() => setIsFenncoOpen(false)}
         boutique={activeBoutique}
         products={products}
       />
+
+      {(openModerationNotes.length > 0 || moderationNotesError) && (
+        <section aria-labelledby="moderation-notes-title" className="mb-5 border border-amber-700/55 bg-[linear-gradient(145deg,rgba(69,44,5,0.28),rgba(10,10,10,0.96))] p-4 sm:p-5 shadow-[0_14px_34px_rgba(0,0,0,0.28)]">
+          <div className="flex items-start gap-3">
+            <span className="relative flex h-11 w-11 shrink-0 items-center justify-center border border-amber-500/45 bg-amber-400/10 text-amber-300">
+              <BellRing className="h-5 w-5" />
+              {openModerationNotes.length > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1 font-mono text-[9px] font-bold text-black">{openModerationNotes.length}</span>}
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 id="moderation-notes-title" className="serif-title text-lg text-white">Observations de l’administration</h2>
+              <p className="mt-1 text-xs leading-5 text-zinc-400">Vérifiez les articles signalés et marquez chaque demande comme traitée après correction.</p>
+            </div>
+          </div>
+
+          {moderationNotesError && <p role="alert" className="mt-3 border border-red-900/60 bg-red-950/30 p-3 text-xs text-red-300">{moderationNotesError}</p>}
+
+          {openModerationNotes.length > 0 && (
+            <div className="mt-4 space-y-3">
+              {openModerationNotes.map(note => {
+                const linkedProduct = products.find(product => product.id === note.productId);
+                return (
+                  <article key={note.id} className="border border-amber-900/45 bg-black/45 p-3">
+                    <div className="flex items-start gap-3">
+                      {note.productImage && <img src={note.productImage} alt={note.productName} className="h-16 w-14 shrink-0 border border-luxury-border object-cover" />}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <button type="button" onClick={() => linkedProduct && onProductClick(linkedProduct)} disabled={!linkedProduct} className="min-h-7 truncate text-left serif-title text-sm text-white hover:text-luxury-gold disabled:cursor-default disabled:hover:text-white">{note.productName}</button>
+                          <span className={`shrink-0 border px-2 py-1 font-mono text-[8px] uppercase tracking-wider ${note.severity === 'action_required' ? 'border-amber-700/60 text-amber-300' : 'border-blue-800/60 text-blue-300'}`}>{note.severity === 'action_required' ? 'Correction demandée' : 'Information'}</span>
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300">{note.text}</p>
+                        <p className="mt-2 font-mono text-[8px] text-zinc-600">{new Date(note.createdAt).toLocaleString('fr-FR')}</p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => resolveModerationNote(note.id)} disabled={moderationNoteBusyId === note.id} className="mt-3 flex min-h-10 w-full items-center justify-center gap-2 border border-emerald-800/60 bg-emerald-950/20 px-3 font-mono text-[9px] uppercase tracking-wider text-emerald-300 hover:bg-emerald-950/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-wait disabled:opacity-50">
+                      <CheckCircle2 className="h-4 w-4" /> {moderationNoteBusyId === note.id ? 'Enregistrement…' : 'Marquer comme traité'}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       <div dir="rtl" className="space-y-4 mb-10 w-full text-right pt-5">
         <section aria-labelledby="daily-summary-title" className="bg-[#0C0C0C] border border-luxury-gold/45 p-4 sm:p-5">

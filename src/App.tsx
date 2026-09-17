@@ -397,7 +397,7 @@ export default function App() {
             const response = await firebaseAuthenticatedFetch('/api/users/profile');
             if (!response.ok) throw new Error('Stored Firebase profile could not be verified');
             const liveProfile = await response.json();
-            const liveStatus = liveProfile.accountStatus || 'approved';
+            const liveStatus = liveProfile.accountStatus || (liveProfile.role === UserRole.ADMIN ? 'approved' : 'pending');
             if (liveProfile.role !== UserRole.ADMIN && liveStatus !== 'approved') {
               await signOut(auth);
               setUser(null);
@@ -502,7 +502,7 @@ export default function App() {
       throw error;
     }
 
-    const accountStatus = profile.accountStatus || 'approved';
+    const accountStatus = profile.accountStatus || (profile.role === UserRole.ADMIN ? 'approved' : 'pending');
     if (profile.role !== UserRole.ADMIN && accountStatus !== 'approved') {
       const message = accountStatus === 'pending'
         ? "Votre compte est en attente de confirmation par l’administration."

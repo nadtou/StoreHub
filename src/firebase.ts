@@ -204,6 +204,15 @@ export async function deleteUploadedStorageFile(fullPath: string): Promise<void>
   await deleteObject(storageRef(firebaseStorage, normalizedPath));
 }
 
+export async function getSecureStorageFileUrl(fullPath: string): Promise<string> {
+  const normalizedPath = fullPath.trim();
+  if (!normalizedPath.startsWith('boutique-verification/')) {
+    throw new Error('Chemin du document de vérification invalide.');
+  }
+  const { storage: firebaseStorage } = await initFirebase();
+  return getDownloadURL(storageRef(firebaseStorage, normalizedPath));
+}
+
 export async function uploadClientAvatar(userId: string, imageDataUrl: string): Promise<string> {
   try {
     const { storage: firebaseStorage } = await initFirebase();

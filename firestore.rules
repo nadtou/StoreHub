@@ -16,7 +16,6 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && (
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin"
-          || !("accountStatus" in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
           || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == "approved"
         );
     }
@@ -112,11 +111,15 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.role in ["client", "boutique"]
-        && request.resource.data.accountStatus == "pending"
         && request.resource.data.approvalSubmittedAt is string
         && (
-          request.resource.data.role == "client"
+          (
+            request.resource.data.role == "client"
+            && request.resource.data.accountStatus == "approved"
+          )
           || (
+            request.resource.data.accountStatus == "pending"
+            &&
             request.resource.data.boutiqueId == "boutique_" + request.auth.uid
             && existsAfter(/databases/$(database)/documents/boutiqueApplications/$(request.resource.data.boutiqueId))
             && getAfter(/databases/$(database)/documents/boutiqueApplications/$(request.resource.data.boutiqueId)).data.ownerId == request.auth.uid
@@ -189,6 +192,50 @@ service cloud.firestore {
       allow read: if true;
       allow create: if ownsBoutique(request.resource.data.boutiqueId) || isAdmin();
       allow update, delete: if ownsBoutique(resource.data.boutiqueId) || isAdmin();
+    }
+
+    function validNewModerationNote(noteId, data) {
+      return data.keys().hasAll([
+          "id", "boutiqueId", "boutiqueOwnerId", "boutiqueName",
+          "productId", "productName", "productImage", "text", "severity",
+          "status", "createdByUid", "createdByName", "createdAt", "updatedAt"
+        ])
+        && data.keys().hasOnly([
+          "id", "boutiqueId", "boutiqueOwnerId", "boutiqueName",
+          "productId", "productName", "productImage", "text", "severity",
+          "status", "createdByUid", "createdByName", "createdAt", "updatedAt",
+          "resolvedAt"
+        ])
+        && data.id == noteId
+        && data.boutiqueId is string
+        && data.boutiqueOwnerId is string
+        && data.productId is string
+        && data.productName is string
+        && data.productImage is string
+        && data.text is string
+        && data.text.size() >= 3
+        && data.text.size() <= 1000
+        && data.severity in ["info", "action_required"]
+        && data.status == "open"
+        && data.createdByUid == request.auth.uid
+        && data.createdAt is string
+        && data.updatedAt == data.createdAt
+        && exists(/databases/$(database)/documents/boutiques/$(data.boutiqueId))
+        && data.boutiqueOwnerId == get(/databases/$(database)/documents/boutiques/$(data.boutiqueId)).data.ownerId
+        && exists(/databases/$(database)/documents/products/$(data.productId))
+        && get(/databases/$(database)/documents/products/$(data.productId)).data.boutiqueId == data.boutiqueId;
+    }
+
+    match /moderationNotes/{noteId} {
+      allow read: if isAdmin() || ownsBoutique(resource.data.boutiqueId);
+      allow create: if isAdmin() && validNewModerationNote(noteId, request.resource.data);
+      allow update: if ownsBoutique(resource.data.boutiqueId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["status", "updatedAt", "resolvedAt"])
+        && request.resource.data.status == "resolved"
+        && request.resource.data.updatedAt is string
+        && request.resource.data.resolvedAt is string;
+      allow delete: if false;
     }
 
     function ownsMessageBoutique(data) {

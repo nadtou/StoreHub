@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>StoreHub — Feuille de route Android</title>
+  <style>
+    :root {
+      --ink: #f7f2e7;
+      --muted: #a8a297;
+      --dim: #746f66;
+      --bg: #0a0a09;
+      --panel: #11110f;
+      --panel-2: #171612;
+      --line: #2b2923;
+      --gold: #d7b334;
+      --gold-soft: #fff0a5;
+      --green: #3bd49b;
+      --red: #ff6b6b;
+      --blue: #6fa8ff;
+      --orange: #ffb35c;
+      --radius: 14px;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .28);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 84% 8%, rgba(215,179,52,.09), transparent 28rem),
+        var(--bg);
+      font: 14px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button, select { color: inherit; }
+    button { cursor: pointer; }
+    a { color: inherit; }
+    .shell { display: grid; grid-template-columns: 255px minmax(0, 1fr); min-height: 100vh; }
+    .sidebar {
+      position: sticky; top: 0; height: 100vh; overflow: auto;
+      padding: 26px 18px; border-right: 1px solid var(--line);
+      background: rgba(11, 11, 10, .92); backdrop-filter: blur(18px);
+    }
+    .brand { padding: 0 10px 24px; border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 6px; color: var(--gold); font: 700 10px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .18em; text-transform: uppercase; }
+    .brand h1 { margin: 0; font: 600 23px/1.1 Georgia, serif; }
+    .brand p { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
+    .nav-title { margin: 25px 10px 9px; color: var(--dim); font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .phase-link {
+      width: 100%; display: grid; grid-template-columns: 25px 1fr auto; gap: 8px; align-items: center;
+      padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; color: var(--muted);
+    }
+    .phase-link:hover, .phase-link.active { color: var(--ink); background: var(--panel-2); }
+    .phase-link span:first-child { color: var(--gold); font: 700 11px ui-monospace, monospace; }
+    .phase-link small { color: var(--dim); }
+    .side-note { margin: 26px 10px 0; padding: 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-size: 11px; }
+    .main { min-width: 0; padding: 42px clamp(22px, 5vw, 76px) 80px; }
+    .topbar { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 28px; }
+    .topbar h2 { max-width: 760px; margin: 4px 0 10px; font: 500 clamp(30px, 5vw, 56px)/1.02 Georgia, serif; letter-spacing: -.035em; }
+    .lede { max-width: 760px; margin: 0; color: var(--muted); font-size: 15px; }
+    .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .btn {
+      border: 1px solid var(--line); border-radius: 9px; background: var(--panel); padding: 9px 12px;
+      font-size: 12px; font-weight: 700; letter-spacing: .04em;
+    }
+    .btn:hover { border-color: #5a5130; background: #191711; }
+    .btn.primary { border-color: var(--gold); background: var(--gold); color: #131207; }
+    .status-banner {
+      display: grid; grid-template-columns: 150px 1fr; gap: 22px; align-items: center;
+      padding: 22px; border: 1px solid #5b4920; border-radius: var(--radius);
+      background: linear-gradient(110deg, rgba(215,179,52,.12), rgba(215,179,52,.025)); box-shadow: var(--shadow);
+    }
+    .score { display: grid; place-items: center; width: 116px; aspect-ratio: 1; border-radius: 50%; margin: auto;
+      background: conic-gradient(var(--gold) var(--progress), #25231d 0); position: relative; }
+    .score::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: var(--panel); }
+    .score-value { position: relative; z-index: 1; text-align: center; }
+    .score-value strong { display: block; font: 600 27px Georgia, serif; }
+    .score-value span { color: var(--muted); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+    .verdict h3 { margin: 0 0 7px; color: var(--gold-soft); font: 600 19px Georgia, serif; }
+    .verdict p { margin: 0; color: var(--muted); }
+    .verdict .blocking { margin-top: 10px; color: var(--ink); font-size: 12px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0 30px; }
+    .metric { padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+    .metric strong { display: block; margin-bottom: 3px; font: 600 23px Georgia, serif; }
+    .metric span { color: var(--muted); font-size: 11px; }
+    .ok { color: var(--green); } .warn { color: var(--orange); } .danger { color: var(--red); }
+    .toolbar {
+      position: sticky; top: 10px; z-index: 10; display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 12px;
+      margin: 0 0 24px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: rgba(17,17,15,.94); backdrop-filter: blur(16px);
+    }
+    .search { position: relative; }
+    .search input { width: 100%; height: 38px; border: 1px solid var(--line); border-radius: 8px; background: #0d0d0c; color: var(--ink); padding: 0 12px; outline: none; }
+    .search input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(215,179,52,.1); }
+    .filters { display: flex; flex-wrap: wrap; gap: 6px; }
+    .filter { border: 1px solid var(--line); border-radius: 8px; background: #0d0d0c; padding: 8px 10px; color: var(--muted); font-size: 11px; }
+    .filter.active { border-color: var(--gold); color: #171407; background: var(--gold); }
+    .section { scroll-margin-top: 82px; margin: 0 0 30px; }
+    .section-head { display: grid; grid-template-columns: 56px 1fr auto; gap: 14px; align-items: center; margin-bottom: 11px; }
+    .phase-no { color: var(--gold); font: 700 12px ui-monospace, monospace; letter-spacing: .12em; }
+    .section h3 { margin: 0; font: 500 23px Georgia, serif; }
+    .phase-meta { color: var(--muted); font-size: 11px; }
+    .phase-progress { min-width: 102px; text-align: right; color: var(--muted); font-size: 11px; }
+    .track { height: 4px; margin-top: 7px; overflow: hidden; border-radius: 99px; background: var(--line); }
+    .track i { display: block; height: 100%; background: var(--gold); transition: width .25s ease; }
+    .task-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--panel); }
+    .task { display: grid; grid-template-columns: 36px minmax(220px, 1.4fr) 108px 118px 90px 32px; gap: 12px; align-items: center; min-height: 64px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+    .task:last-child { border-bottom: 0; }
+    .task:hover { background: #15140f; }
+    .check { appearance: none; width: 18px; height: 18px; border: 1px solid #59554a; border-radius: 5px; background: transparent; display: grid; place-items: center; }
+    .check:checked { border-color: var(--gold); background: var(--gold); }
+    .check:checked::after { content: "✓"; color: #131207; font-weight: 900; font-size: 12px; }
+    .task-title { min-width: 0; }
+    .task-title strong { display: block; font-size: 13px; font-weight: 700; }
+    .task-title small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+    .tag { display: inline-flex; justify-content: center; padding: 4px 7px; border-radius: 99px; font: 700 9px/1 ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
+    .tag.p0 { color: #ffc0c0; background: rgba(255,107,107,.13); }
+    .tag.p1 { color: #ffd59c; background: rgba(255,179,92,.12); }
+    .tag.p2 { color: #bad2ff; background: rgba(111,168,255,.12); }
+    .status-select { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: #0c0c0b; padding: 6px 7px; color: var(--muted); font-size: 10px; }
+    .duration { color: var(--muted); font-size: 11px; text-align: center; }
+    .expand { width: 29px; height: 29px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); }
+    .expand:hover { border-color: var(--line); color: var(--ink); }
+    .details { grid-column: 2 / -1; display: none; padding: 2px 0 8px; color: var(--muted); font-size: 12px; }
+    .task.open .details { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+    .detail-box { padding: 10px 12px; border-left: 2px solid #4a4328; background: #0d0d0b; }
+    .detail-box b { display: block; margin-bottom: 3px; color: var(--ink); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+    .empty { display: none; padding: 42px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
+    .footer { margin-top: 45px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+    .print-only { display: none; }
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .task { grid-template-columns: 32px 1fr 96px 30px; }
+      .task .priority, .task .duration { display: none; }
+      .task-title { grid-column: 2; }
+      .status-select { grid-column: 3; }
+      .expand { grid-column: 4; }
+      .details { grid-column: 2 / -1; }
+    }
+    @media (max-width: 650px) {
+      .main { padding: 26px 14px 60px; }
+      .topbar { display: block; }
+      .actions { justify-content: flex-start; margin-top: 18px; }
+      .status-banner { grid-template-columns: 1fr; text-align: center; }
+      .metrics { grid-template-columns: 1fr 1fr; }
+      .toolbar { position: static; grid-template-columns: 1fr; }
+      .filters { overflow-x: auto; flex-wrap: nowrap; }
+      .section-head { grid-template-columns: 44px 1fr; }
+      .phase-progress { grid-column: 2; text-align: left; }
+      .task { grid-template-columns: 28px 1fr 30px; gap: 7px; padding: 11px 10px; }
+      .status-select { grid-column: 2; grid-row: 2; width: 130px; }
+      .expand { grid-column: 3; grid-row: 1 / 3; }
+      .task.open .details { grid-template-columns: 1fr; }
+    }
+    @media print {
+      body { color: #111; background: #fff; }
+      .shell { display: block; }
+      .sidebar, .toolbar, .actions, .expand { display: none !important; }
+      .main { padding: 0; }
+      .status-banner, .metric, .task-list { box-shadow: none; background: #fff; border-color: #ccc; }
+      .task { grid-template-columns: 28px 1fr 100px 110px 80px; border-color: #ddd; break-inside: avoid; }
+      .task-title small, .metric span, .lede, .verdict p, .phase-meta, .duration { color: #555; }
+      .print-only { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="eyebrow">StoreHub / Livraison</p>
+        <h1>Android Roadmap</h1>
+        <p>Plan vivant, enregistré automatiquement sur cet appareil.</p>
+      </div>
+      <p class="nav-title">Chronologie</p>
+      <nav id="phaseNav" aria-label="Phases de la feuille de route"></nav>
+      <div class="side-note">Les cases et statuts sont sauvegardés dans le navigateur. Exportez régulièrement une copie JSON pour conserver l'historique.</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Audit du 16 septembre 2026</p>
+          <h2>De la version web à une application Android publiable</h2>
+          <p class="lede">Une feuille de route basée sur l'état réel du projet, organisée par dépendances et par résultat vérifiable.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" id="exportBtn" type="button">Exporter JSON</button>
+          <button class="btn" id="printBtn" type="button">Imprimer</button>
+          <button class="btn" id="resetBtn" type="button">Réinitialiser</button>
+        </div>
+      </header>
+
+      <section class="status-banner" aria-labelledby="verdict-title">
+        <div class="score" id="scoreRing" style="--progress: 0%">
+          <div class="score-value"><strong id="globalProgress">0%</strong><span>accompli</span></div>
+        </div>
+        <div class="verdict">
+          <p class="eyebrow">Verdict actuel</p>
+          <h3 id="verdict-title">Non, l'application n'est pas encore prête à 100 % pour le marché Android.</h3>
+          <p>La base se compile et les règles Firebase existent, mais la conversion mobile, les tests automatisés et plusieurs contrôles de sécurité restent à terminer.</p>
+          <p class="blocking"><strong>Blocages de lancement :</strong> projet Android absent, API mobile non configurée, 4 alertes de dépendances élevées, aucun test automatisé et paquet initial trop lourd.</p>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Résultats de l'audit">
+        <div class="metric"><strong class="ok">OK</strong><span>TypeScript sans erreur</span></div>
+        <div class="metric"><strong class="ok">OK</strong><span>Construction de production</span></div>
+        <div class="metric"><strong class="danger">4</strong><span>Alertes élevées npm</span></div>
+        <div class="metric"><strong class="warn">1,72 Mo</strong><span>Paquet JavaScript principal</span></div>
+      </section>
+
+      <div class="toolbar" aria-label="Outils de la feuille de route">
+        <label class="search"><span class="print-only">Recherche</span><input id="searchInput" type="search" placeholder="Rechercher une tâche, un résultat ou une dépendance…"></label>
+        <div class="filters" id="filters">
+          <button class="filter active" data-filter="all" type="button">Toutes</button>
+          <button class="filter" data-filter="p0" type="button">Critiques P0</button>
+          <button class="filter" data-filter="doing" type="button">En cours</button>
+          <button class="filter" data-filter="done" type="button">Terminées</button>
+          <button class="filter" data-filter="todo" type="button">À faire</button>
+        </div>
+      </div>
+
+      <div id="roadmap"></div>
+      <div class="empty" id="emptyState">Aucune tâche ne correspond à ce filtre.</div>
+      <footer class="footer">Estimation indicative : 6 à 9 semaines pour une petite équipe, sous réserve de validation des comptes Firebase, Google Play et de l'API de production. Une tâche n'est terminée que lorsque son critère d'acceptation est démontré.</footer>
+    </main>
+  </div>
+
+  <script>
+    const phases = [
+      { id: 1, title: "Stabiliser la base", timing: "Jours 1–3", goal: "Une version reproductible et sans risque critique connu." },
+      { id: 2, title: "Valider les parcours métier", timing: "Semaine 1–2", goal: "Client, boutique et administration vérifiés de bout en bout." },
+      { id: 3, title: "Renforcer Firebase", timing: "Semaine 2–3", goal: "Données isolées, téléversements sûrs et protection contre les abus." },
+      { id: 4, title: "Créer le socle Android", timing: "Semaine 3–4", goal: "Projet Capacitor exécutable sur émulateur et téléphone." },
+      { id: 5, title: "Adapter les fonctions mobiles", timing: "Semaine 4–5", goal: "Connexion, caméra, retour, clavier et notifications natifs." },
+      { id: 6, title: "Tester et optimiser", timing: "Semaine 5–7", goal: "Qualité appareils, performance et accessibilité validées." },
+      { id: 7, title: "Publier progressivement", timing: "Semaine 7–9", goal: "AAB signé, piste interne, conformité et surveillance." }
+    ];
+
+    const tasks = [
+      {id:"1.1",phase:1,title:"Figer une version de référence",desc:"Créer un point Git identifiable et documenter les données de test.",priority:"p0",duration:"Fait",status:"done",accept:"Une version peut être reconstruite à l'identique depuis le dépôt.",depends:"Aucune"},
+      {id:"1.2",phase:1,title:"Contrôle TypeScript",desc:"Vérifier toutes les erreurs de types avant chaque livraison.",priority:"p0",duration:"Fait",status:"done",accept:"La commande de contrôle se termine avec le code 0.",depends:"Aucune"},
+      {id:"1.3",phase:1,title:"Construction de production",desc:"Produire le frontend et le serveur sans erreur.",priority:"p0",duration:"Fait",status:"done",accept:"Les artefacts de production sont générés et démarrent correctement.",depends:"1.2"},
+      {id:"1.4",phase:1,title:"Corriger les vulnérabilités npm",desc:"Traiter 4 alertes élevées et 5 modérées sans casser l'application.",priority:"p0",duration:"1 j",status:"todo",accept:"Aucune vulnérabilité élevée en dépendances de production.",depends:"1.3"},
+      {id:"1.5",phase:1,title:"Ajouter la chaîne de vérification",desc:"Exécuter types, tests, construction et audit avec une commande unique.",priority:"p1",duration:"0,5 j",status:"todo",accept:"Un échec bloque la livraison et donne un message exploitable.",depends:"1.4"},
+
+      {id:"2.1",phase:2,title:"Tester inscription et connexion client",desc:"Email, Google, vérification, reconnexion et mot de passe oublié.",priority:"p0",duration:"1 j",status:"todo",accept:"Chaque scénario réussit et chaque erreur est compréhensible.",depends:"1.5"},
+      {id:"2.2",phase:2,title:"Tester l'inscription boutique",desc:"Dossier, documents, attente, acceptation, refus et rollback Auth.",priority:"p0",duration:"1 j",status:"todo",accept:"Une boutique non approuvée ne peut pas entrer dans sa console.",depends:"2.1"},
+      {id:"2.3",phase:2,title:"Tester catalogue et stock",desc:"Créer, modifier, supprimer, tailles, pointures et baisse de stock.",priority:"p0",duration:"1 j",status:"todo",accept:"Le client et la boutique voient la même donnée après chaque action.",depends:"2.2"},
+      {id:"2.4",phase:2,title:"Tester réservation et commande",desc:"Création client, alerte boutique, statut, livraison et historique.",priority:"p0",duration:"1 j",status:"todo",accept:"Aucun doublon et toutes les transitions autorisées sont persistées.",depends:"2.3"},
+      {id:"2.5",phase:2,title:"Tester messagerie et modération",desc:"Messages client/boutique et commentaires administrateur/gérant.",priority:"p0",duration:"1 j",status:"todo",accept:"Le bon destinataire reçoit le contenu sans fuite inter-boutiques.",depends:"2.4"},
+      {id:"2.6",phase:2,title:"Tester les actions administrateur",desc:"Confirmer, suspendre, révoquer, réactiver et retour de navigation.",priority:"p0",duration:"1 j",status:"todo",accept:"Chaque action exige le rôle admin et produit l'état attendu.",depends:"2.5"},
+
+      {id:"3.1",phase:3,title:"Automatiser les tests des règles Firestore",desc:"Cas autorisés et refusés pour client, boutique et admin.",priority:"p0",duration:"1,5 j",status:"todo",accept:"La suite prouve l'isolation des comptes et des boutiques.",depends:"2.6"},
+      {id:"3.2",phase:3,title:"Automatiser les tests Storage",desc:"Propriétaire, formats, tailles et documents privés.",priority:"p0",duration:"1 j",status:"todo",accept:"Un fichier interdit ou d'un autre propriétaire est toujours refusé.",depends:"3.1"},
+      {id:"3.3",phase:3,title:"Vérifier la compression WebP",desc:"1080 px maximum, qualité 80 %, erreurs et limites serveur.",priority:"p1",duration:"0,5 j",status:"todo",accept:"Toutes les images livrées respectent poids, format et orientation.",depends:"3.2"},
+      {id:"3.4",phase:3,title:"Activer Firebase App Check",desc:"Observer les métriques puis appliquer le contrôle progressivement.",priority:"p0",duration:"1 j",status:"todo",accept:"Firestore, Storage et API rejettent les clients non attestés en production.",depends:"3.2"},
+      {id:"3.5",phase:3,title:"Préparer sauvegarde et restauration",desc:"Exporter les données et tester une restauration isolée.",priority:"p1",duration:"1 j",status:"todo",accept:"La procédure, la fréquence et les responsables sont documentés.",depends:"3.1"},
+
+      {id:"4.1",phase:4,title:"Décider l'identifiant Android définitif",desc:"Choisir le package ID, le nom public et les environnements.",priority:"p0",duration:"0,5 j",status:"todo",accept:"L'identifiant ne changera plus après la première publication.",depends:"3.5"},
+      {id:"4.2",phase:4,title:"Installer et initialiser Capacitor",desc:"Ajouter le runtime, la CLI et configurer la sortie Vite.",priority:"p0",duration:"0,5 j",status:"todo",accept:"La synchronisation copie correctement la construction web.",depends:"4.1"},
+      {id:"4.3",phase:4,title:"Générer le projet Android",desc:"Créer le dossier Android et l'ouvrir dans Android Studio.",priority:"p0",duration:"0,5 j",status:"todo",accept:"Gradle compile une version debug sans erreur.",depends:"4.2"},
+      {id:"4.4",phase:4,title:"Configurer l'origine de l'API",desc:"Remplacer les appels relatifs /api par une URL HTTPS par environnement.",priority:"p0",duration:"1 j",status:"todo",accept:"Toutes les API fonctionnent depuis la WebView, sans localhost.",depends:"4.3"},
+      {id:"4.5",phase:4,title:"Tester le premier démarrage Android",desc:"Installer sur émulateur et téléphone physique.",priority:"p0",duration:"1 j",status:"todo",accept:"Démarrage, navigation et appels API réussissent sur les deux cibles.",depends:"4.4"},
+
+      {id:"5.1",phase:5,title:"Adapter Google Sign-In à Android",desc:"Configurer l'application Firebase Android, SHA et retour d'authentification.",priority:"p0",duration:"1,5 j",status:"todo",accept:"Connexion et déconnexion Google passent sur appareil réel.",depends:"4.5"},
+      {id:"5.2",phase:5,title:"Adapter caméra et galerie",desc:"Permissions, photo, sélection, compression et annulation.",priority:"p0",duration:"1 j",status:"todo",accept:"Les refus de permission ne bloquent ni ne font planter l'app.",depends:"4.5"},
+      {id:"5.3",phase:5,title:"Gérer le bouton Retour Android",desc:"Respecter l'historique, les fenêtres et la sortie volontaire.",priority:"p1",duration:"0,5 j",status:"todo",accept:"Aucun retour ne bascule vers un mauvais espace utilisateur.",depends:"4.5"},
+      {id:"5.4",phase:5,title:"Corriger clavier et zones sûres",desc:"Éviter le masquage des champs, boutons et navigation basse.",priority:"p1",duration:"1 j",status:"todo",accept:"Tous les formulaires restent utilisables avec le clavier ouvert.",depends:"4.5"},
+      {id:"5.5",phase:5,title:"Mettre en place les notifications",desc:"Commandes et réservations, consentement et navigation ciblée.",priority:"p1",duration:"1,5 j",status:"todo",accept:"Une notification ouvre le bon écran sans exposer de donnée sensible.",depends:"5.1"},
+
+      {id:"6.1",phase:6,title:"Ajouter les tests automatisés",desc:"Unitaires, intégration API et parcours critiques de bout en bout.",priority:"p0",duration:"3 j",status:"todo",accept:"Les parcours P0 s'exécutent de façon répétable avant chaque version.",depends:"5.5"},
+      {id:"6.2",phase:6,title:"Découper le paquet JavaScript",desc:"Chargement différé des écrans et bibliothèques lourdes.",priority:"p1",duration:"1 j",status:"todo",accept:"Le paquet initial ne déclenche plus l'avertissement de 500 kB.",depends:"6.1"},
+      {id:"6.3",phase:6,title:"Matrice appareils et versions",desc:"Samsung S22 Ultra, petit écran, appareil récent et API minimale.",priority:"p0",duration:"2 j",status:"todo",accept:"Tous les parcours P0 passent sur chaque profil retenu.",depends:"6.1"},
+      {id:"6.4",phase:6,title:"Tester réseau lent et hors-ligne",desc:"Délais, reprises, doublons, cache et messages d'erreur.",priority:"p0",duration:"1 j",status:"todo",accept:"Aucune perte silencieuse ni opération dupliquée.",depends:"6.1"},
+      {id:"6.5",phase:6,title:"Contrôler accessibilité et ergonomie",desc:"Contrastes, tailles tactiles, clavier et lecteur d'écran.",priority:"p1",duration:"1 j",status:"todo",accept:"Les fonctions essentielles sont utilisables sans vision parfaite ni geste précis.",depends:"6.3"},
+
+      {id:"7.1",phase:7,title:"Créer la clé d'envoi sécurisée",desc:"Générer, sauvegarder et documenter la récupération.",priority:"p0",duration:"0,5 j",status:"todo",accept:"La clé n'est pas dans Git et possède une sauvegarde contrôlée.",depends:"6.5"},
+      {id:"7.2",phase:7,title:"Préparer la conformité Play Store",desc:"Confidentialité, sécurité des données, permissions et suppression de compte.",priority:"p0",duration:"1,5 j",status:"todo",accept:"Les déclarations correspondent exactement au comportement réel.",depends:"7.1"},
+      {id:"7.3",phase:7,title:"Créer les éléments de fiche",desc:"Icône, captures, description, coordonnées et classification.",priority:"p1",duration:"1 j",status:"todo",accept:"Tous les formats Play Console sont acceptés sans avertissement.",depends:"7.2"},
+      {id:"7.4",phase:7,title:"Générer et tester l'AAB signé",desc:"Cibler API 36, activer Play App Signing et utiliser la piste interne.",priority:"p0",duration:"1 j",status:"todo",accept:"L'AAB s'installe via Play et réussit les tests pré-lancement.",depends:"7.3"},
+      {id:"7.5",phase:7,title:"Lancer progressivement",desc:"Test fermé, faible pourcentage, surveillance puis montée graduelle.",priority:"p0",duration:"Continu",status:"todo",accept:"Seuils d'arrêt, retour arrière et responsables sont définis.",depends:"7.4"}
+    ];
+
+    const storageKey = "storehub-android-roadmap-v1";
+    const state = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    let activeFilter = "all";
+    let query = "";
+
+    for (const task of tasks) if (state[task.id]) task.status = state[task.id];
+
+    function save() {
+      const value = Object.fromEntries(tasks.map(task => [task.id, task.status]));
+      localStorage.setItem(storageKey, JSON.stringify(value));
+    }
+
+    function statusLabel(value) {
+      return ({todo:"À faire", doing:"En cours", blocked:"Bloquée", done:"Terminée"})[value];
+    }
+
+    function visible(task) {
+      const text = `${task.id} ${task.title} ${task.desc} ${task.accept} ${task.depends}`.toLowerCase();
+      const filterMatch = activeFilter === "all" || task.priority === activeFilter || task.status === activeFilter;
+      return filterMatch && text.includes(query);
+    }
+
+    function taskMarkup(task) {
+      return `<article class="task" data-id="${task.id}">
+        <input class="check" type="checkbox" aria-label="Marquer ${task.title} comme terminée" ${task.status === "done" ? "checked" : ""}>
+        <div class="task-title"><strong>${task.id} · ${task.title}</strong><small>${task.desc}</small></div>
+        <div class="priority"><span class="tag ${task.priority}">${task.priority === "p0" ? "Critique P0" : task.priority === "p1" ? "Important P1" : "Confort P2"}</span></div>
+        <select class="status-select" aria-label="Statut de ${task.title}">
+          ${["todo","doing","blocked","done"].map(value => `<option value="${value}" ${task.status === value ? "selected" : ""}>${statusLabel(value)}</option>`).join("")}
+        </select>
+        <div class="duration">${task.duration}</div>
+        <button class="expand" type="button" aria-expanded="false" aria-label="Afficher le détail">+</button>
+        <div class="details">
+          <div class="detail-box"><b>Critère d'acceptation</b>${task.accept}</div>
+          <div class="detail-box"><b>Dépendance</b>${task.depends}</div>
+        </div>
+      </article>`;
+    }
+
+    function render() {
+      const roadmap = document.getElementById("roadmap");
+      const visibleTasks = tasks.filter(visible);
+      roadmap.innerHTML = phases.map(phase => {
+        const phaseTasks = tasks.filter(task => task.phase === phase.id);
+        const filtered = phaseTasks.filter(visible);
+        if (!filtered.length) return "";
+        const done = phaseTasks.filter(task => task.status === "done").length;
+        const pct = Math.round(done / phaseTasks.length * 100);
+        return `<section class="section" id="phase-${phase.id}">
+          <div class="section-head">
+            <div class="phase-no">0${phase.id}</div>
+            <div><h3>${phase.title}</h3><div class="phase-meta">${phase.timing} · ${phase.goal}</div></div>
+            <div class="phase-progress">${done}/${phaseTasks.length} terminées<div class="track"><i style="width:${pct}%"></i></div></div>
+          </div>
+          <div class="task-list">${filtered.map(taskMarkup).join("")}</div>
+        </section>`;
+      }).join("");
+      document.getElementById("emptyState").style.display = visibleTasks.length ? "none" : "block";
+      bindTasks();
+      updateProgress();
+      renderNav();
+    }
+
+    function bindTasks() {
+      document.querySelectorAll(".task").forEach(row => {
+        const task = tasks.find(item => item.id === row.dataset.id);
+        row.querySelector(".check").addEventListener("change", event => {
+          task.status = event.target.checked ? "done" : "todo";
+          save(); render();
+        });
+        row.querySelector(".status-select").addEventListener("change", event => {
+          task.status = event.target.value;
+          save(); render();
+        });
+        row.querySelector(".expand").addEventListener("click", event => {
+          const open = row.classList.toggle("open");
+          event.currentTarget.textContent = open ? "−" : "+";
+          event.currentTarget.setAttribute("aria-expanded", String(open));
+        });
+      });
+    }
+
+    function updateProgress() {
+      const done = tasks.filter(task => task.status === "done").length;
+      const pct = Math.round(done / tasks.length * 100);
+      document.getElementById("globalProgress").textContent = `${pct}%`;
+      document.getElementById("scoreRing").style.setProperty("--progress", `${pct}%`);
+    }
+
+    function renderNav() {
+      document.getElementById("phaseNav").innerHTML = phases.map(phase => {
+        const phaseTasks = tasks.filter(task => task.phase === phase.id);
+        const done = phaseTasks.filter(task => task.status === "done").length;
+        return `<button class="phase-link" type="button" data-target="phase-${phase.id}"><span>0${phase.id}</span><span>${phase.title}</span><small>${done}/${phaseTasks.length}</small></button>`;
+      }).join("");
+      document.querySelectorAll(".phase-link").forEach(button => button.addEventListener("click", () => {
+        document.getElementById(button.dataset.target)?.scrollIntoView({behavior:"smooth", block:"start"});
+      }));
+    }
+
+    document.getElementById("searchInput").addEventListener("input", event => { query = event.target.value.trim().toLowerCase(); render(); });
+    document.querySelectorAll(".filter").forEach(button => button.addEventListener("click", () => {
+      document.querySelectorAll(".filter").forEach(item => item.classList.remove("active"));
+      button.classList.add("active"); activeFilter = button.dataset.filter; render();
+    }));
+    document.getElementById("printBtn").addEventListener("click", () => window.print());
+    document.getElementById("resetBtn").addEventListener("click", () => {
+      if (!confirm("Réinitialiser tout l'avancement de cette feuille de route ?")) return;
+      localStorage.removeItem(storageKey); location.reload();
+    });
+    document.getElementById("exportBtn").addEventListener("click", () => {
+      const payload = { exportedAt: new Date().toISOString(), progress: Object.fromEntries(tasks.map(task => [task.id, task.status])) };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+      const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "storehub-roadmap-progress.json"; link.click(); URL.revokeObjectURL(link.href);
+    });
+
+    render();
+  </script>
+</body>
+</html>

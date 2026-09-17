@@ -17,7 +17,7 @@ import {
 } from "firebase/firestore";
 import fs from "fs";
 import path from "path";
-import { Boutique, BoutiqueApplication, ManualOrder, Product, UserProfile, VisibilityPoint } from "../types";
+import { Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteStatus, Product, UserProfile, VisibilityPoint } from "../types";
 import { ensureRequiredClothingSizes, generateShoeSizes, isShoeCategory } from "../utils/productSizes";
 
 // Load Firebase configuration from the auto-generated config file
@@ -577,6 +577,61 @@ async function queryAuthenticatedDocuments<T>(
     .map((row) => objectFromFirestoreDocument<T>(row.document));
 }
 
+export async function getModerationNotesForBoutiqueAuthenticated(
+  boutiqueId: string,
+  idToken: string,
+): Promise<ModerationNote[]> {
+  const notes = await queryAuthenticatedDocuments<ModerationNote>(
+    "moderationNotes",
+    "boutiqueId",
+    boutiqueId,
+    idToken,
+  );
+  return notes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export async function saveModerationNoteAuthenticated(
+  note: ModerationNote,
+  idToken: string,
+): Promise<void> {
+  await writeAuthenticatedDocument(
+    "moderationNotes",
+    note.id,
+    note as unknown as Record<string, any>,
+    idToken,
+  );
+}
+
+export async function updateModerationNoteStatusAuthenticated(
+  noteId: string,
+  boutiqueId: string,
+  status: ModerationNoteStatus,
+  idToken: string,
+): Promise<ModerationNote> {
+  const currentDocument = await getAuthenticatedRawDocument("moderationNotes", noteId, idToken);
+  const current = currentDocument ? objectFromFirestoreDocument<ModerationNote>(currentDocument) : null;
+  if (!current || current.boutiqueId !== boutiqueId) {
+    const error: any = new Error("Observation de modération introuvable.");
+    error.status = 404;
+    throw error;
+  }
+
+  const updatedAt = new Date().toISOString();
+  const note: ModerationNote = {
+    ...current,
+    status,
+    updatedAt,
+    ...(status === "resolved" ? { resolvedAt: updatedAt } : { resolvedAt: undefined }),
+  };
+  await writeAuthenticatedDocument(
+    "moderationNotes",
+    noteId,
+    note as unknown as Record<string, any>,
+    idToken,
+  );
+  return note;
+}
+
 export async function saveProductAuthenticated(product: Product, idToken: string): Promise<void> {
   await writeAuthenticatedDocument("products", product.id, product as unknown as Record<string, any>, idToken);
 }
@@ -701,15 +756,18 @@ export async function updateBoutiqueVerificationAuthenticated(
 
   if (ownerUpdates) {
     const ownerDocument = await getAuthenticatedRawDocument("users", currentBoutique.ownerId, idToken);
-    if (!ownerDocument) throw new Error("Boutique owner profile not found");
-    const currentOwner = objectFromFirestoreDocument<UserProfile>(ownerDocument);
-    writes.push({
-      update: {
-        name: firestoreDocumentName("users", currentBoutique.ownerId),
-        fields: firestoreFieldsFromObject({ ...currentOwner, ...ownerUpdates, uid: currentBoutique.ownerId }),
-      },
-      currentDocument: { updateTime: ownerDocument.updateTime },
-    });
+    if (ownerDocument) {
+      const currentOwner = objectFromFirestoreDocument<UserProfile>(ownerDocument);
+      writes.push({
+        update: {
+          name: firestoreDocumentName("users", currentBoutique.ownerId),
+          fields: firestoreFieldsFromObject({ ...currentOwner, ...ownerUpdates, uid: currentBoutique.ownerId }),
+        },
+        currentDocument: { updateTime: ownerDocument.updateTime },
+      });
+    } else {
+      console.warn(`Boutique ${boutiqueId} has no owner profile; boutique status was updated without an account status write.`);
+    }
   }
 
   await commitAuthenticatedWrites(writes, idToken);

@@ -165,6 +165,28 @@ export interface Collection {
   order: number;
 }
 
+export type ModerationNoteSeverity = 'info' | 'action_required';
+export type ModerationNoteStatus = 'open' | 'resolved';
+
+/** Observation privée envoyée par l'administration au gérant d'une boutique. */
+export interface ModerationNote {
+  id: string;
+  boutiqueId: string;
+  boutiqueOwnerId: string;
+  boutiqueName: string;
+  productId: string;
+  productName: string;
+  productImage: string;
+  text: string;
+  severity: ModerationNoteSeverity;
+  status: ModerationNoteStatus;
+  createdByUid: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+}
+
 export interface Message {
   id: string;
   sender: 'user' | 'stylist';

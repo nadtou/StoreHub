@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch';
-import { Boutique, Product, UserProfile, UserRole } from '../types';
+import { getSecureStorageFileUrl } from '../firebase';
+import { Boutique, ModerationNote, ModerationNoteSeverity, Product, UserProfile, UserRole } from '../types';
 import FennecMascot from './FennecMascot';
 import { 
   Building2, 
@@ -16,7 +17,6 @@ import {
   ExternalLink, 
   ArrowRight, 
   ArrowLeft,
-  RotateCcw, 
   Sparkles, 
   Search, 
   Lock,
@@ -33,9 +33,11 @@ import {
   Upload,
   CheckCircle2,
   Play,
-  BarChart3,
   Bot,
-  Settings
+  Settings,
+  FolderOpen,
+  MessageSquare,
+  Send
 } from 'lucide-react';
 
 interface AdminConsoleProps {
@@ -46,7 +48,7 @@ interface AdminConsoleProps {
 }
 
 export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, onBack }: AdminConsoleProps) {
-  const [activeTab, setActiveTab] = useState<'stats' | 'boutiques' | 'products' | 'users' | 'documents'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'boutiques' | 'products' | 'users' | 'documents' | 'audit'>('stats');
   const [boutiques, setBoutiques] = useState<Boutique[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -54,6 +56,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [approvalBusyUid, setApprovalBusyUid] = useState<string | null>(null);
+  const [boutiqueActionBusyId, setBoutiqueActionBusyId] = useState<string | null>(null);
 
   // Admin Profile states (Avatar, Name, Role)
   const [adminAvatar, setAdminAvatar] = useState<string>(() => {
@@ -89,8 +92,20 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   const [productSearch, setProductSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [featureSearch, setFeatureSearch] = useState('');
-  const [selectedBoutiqueFilter, setSelectedBoutiqueFilter] = useState('all');
-  const [isBoutiqueFilterOpen, setIsBoutiqueFilterOpen] = useState(false);
+  const [moderationBoutiqueSearch, setModerationBoutiqueSearch] = useState('');
+
+  // Catalogue moderation is intentionally hierarchical for large inventories.
+  const [selectedModerationBoutiqueId, setSelectedModerationBoutiqueId] = useState<string | null>(null);
+  const [selectedModerationCollection, setSelectedModerationCollection] = useState<string | null>(null);
+  const [selectedModerationProductId, setSelectedModerationProductId] = useState<string | null>(null);
+  const [moderationNotes, setModerationNotes] = useState<ModerationNote[]>([]);
+  const [moderationNotesLoading, setModerationNotesLoading] = useState(false);
+  const [moderationNotesError, setModerationNotesError] = useState<string | null>(null);
+  const [moderationComment, setModerationComment] = useState('');
+  const [moderationSeverity, setModerationSeverity] = useState<ModerationNoteSeverity>('action_required');
+  const [moderationSubmitting, setModerationSubmitting] = useState(false);
+  const [moderationFeedback, setModerationFeedback] = useState<string | null>(null);
+  const [moderationVisibleLimit, setModerationVisibleLimit] = useState(12);
   
   // Document preview state
   const [previewDoc, setPreviewDoc] = useState<{
@@ -100,22 +115,22 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     docType: 'KBIS' | 'CNI' | 'Autre';
     status: 'pending' | 'verified' | 'rejected' | 'suspended';
   } | null>(null);
-
-  // Stats filter / search
-  const [recentActivities] = useState([
-    { id: 1, time: "Il y a 5 min", type: "product", text: "Nouveau sac à main en cuir ajouté par Hermès", status: "success" },
-    { id: 2, time: "Il y a 12 min", type: "boutique", text: "Demande d'approbation soumise par 'Dior Couture'", status: "warning" },
-    { id: 3, time: "Il y a 45 min", type: "user", text: "Nouvel utilisateur inscrit (Client Élite)", status: "info" },
-    { id: 4, time: "Il y a 2 heures", type: "document", text: "KBIS certifié avec succès pour la boutique 'Chanel'", status: "success" },
-    { id: 5, time: "Il y a 4 heures", type: "system", text: "Mise à jour des règles de modération automatique", status: "system" }
-  ]);
+  const [secureDocumentUrl, setSecureDocumentUrl] = useState<string | null>(null);
+  const [documentLoading, setDocumentLoading] = useState(false);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const selectedApplicationBoutique = previewDoc
+    ? boutiques.find(boutique => boutique.id === previewDoc.boutiqueId)
+    : undefined;
+  const selectedApplicationOwner = selectedApplicationBoutique
+    ? users.find(user => user.uid === selectedApplicationBoutique.ownerId || user.boutiqueId === selectedApplicationBoutique.id)
+    : undefined;
 
   const fetchAllData = async () => {
     setLoading(true);
     try {
       const [resB, resP, resU] = await Promise.all([
         firebaseAuthenticatedFetch('/api/admin/boutiques'),
-        fetch('/api/products'),
+        firebaseAuthenticatedFetch('/api/admin/products'),
         firebaseAuthenticatedFetch('/api/admin/users')
       ]);
 
@@ -160,31 +175,95 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (activeTab !== 'products' || !selectedModerationBoutiqueId) {
+      setModerationNotes([]);
+      setModerationNotesError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setModerationNotesLoading(true);
+    setModerationNotesError(null);
+    firebaseAuthenticatedFetch(`/api/admin/moderation-notes?boutiqueId=${encodeURIComponent(selectedModerationBoutiqueId)}`)
+      .then(async response => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.error || 'Impossible de charger les observations.');
+        if (!cancelled) setModerationNotes(Array.isArray(payload) ? payload : []);
+      })
+      .catch(noteError => {
+        if (!cancelled) setModerationNotesError(noteError instanceof Error ? noteError.message : 'Impossible de charger les observations.');
+      })
+      .finally(() => {
+        if (!cancelled) setModerationNotesLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [activeTab, selectedModerationBoutiqueId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const documentPath = selectedApplicationBoutique?.verificationDocPath;
+    setSecureDocumentUrl(null);
+    setDocumentError(null);
+    if (!documentPath) {
+      setDocumentLoading(false);
+      return () => { cancelled = true; };
+    }
+
+    setDocumentLoading(true);
+    getSecureStorageFileUrl(documentPath)
+      .then(url => {
+        if (!cancelled) setSecureDocumentUrl(url);
+      })
+      .catch(error => {
+        if (!cancelled) {
+          console.error('Failed to load boutique verification document:', error);
+          setDocumentError("Le document sécurisé n’a pas pu être chargé.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDocumentLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedApplicationBoutique?.verificationDocPath]);
+
   // Update Boutique API
   const handleUpdateBoutique = async (boutiqueId: string, updates: Partial<Boutique>) => {
+    if (boutiqueActionBusyId) return;
+    setBoutiqueActionBusyId(boutiqueId);
     try {
       const response = await firebaseAuthenticatedFetch(`/api/admin/boutiques/${boutiqueId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
-      if (response.ok) {
-        // Update local state
-        setBoutiques(prev => prev.map(b => b.id === boutiqueId ? { ...b, ...updates } : b));
-        
-        // If we are looking at a preview, update it as well
-        if (previewDoc && previewDoc.boutiqueId === boutiqueId) {
-          setPreviewDoc(prev => prev ? {
-            ...prev,
-            status: updates.isSuspended ? 'suspended' : (updates.isVerified ? 'verified' : 'pending')
-          } : null);
-        }
-      } else {
-        alert("Échec de la mise à jour de la boutique.");
+      const payload = await response.json().catch(() => null) as { error?: string; boutique?: Boutique } | null;
+      if (!response.ok || !payload?.boutique) {
+        throw new Error(payload?.error || "Échec de la mise à jour de la boutique.");
+      }
+
+      const updatedBoutique = payload.boutique;
+      setBoutiques(prev => prev.map(b => b.id === boutiqueId ? updatedBoutique : b));
+
+      if (previewDoc && previewDoc.boutiqueId === boutiqueId) {
+        setPreviewDoc(prev => prev ? {
+          ...prev,
+          status: updatedBoutique.isSuspended
+            ? 'suspended'
+            : updatedBoutique.isVerified
+              ? 'verified'
+              : updatedBoutique.verificationStatus === 'rejected'
+                ? 'rejected'
+                : 'pending'
+        } : null);
       }
     } catch (err) {
       console.error("Error updating boutique:", err);
-      alert("Une erreur est survenue lors de la mise à jour.");
+      alert(err instanceof Error ? err.message : "Une erreur est survenue lors de la mise à jour.");
+    } finally {
+      setBoutiqueActionBusyId(null);
     }
   };
 
@@ -222,6 +301,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       });
       if (response.ok) {
         setProducts(prev => prev.filter(p => p.id !== productId));
+        if (selectedModerationProductId === productId) setSelectedModerationProductId(null);
         alert("Produit supprimé du catalogue.");
       } else {
         alert("Échec de la suppression.");
@@ -255,8 +335,11 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       setUsers(current => current.map(item => item.uid === user.uid ? payload.user : item));
       if (payload.boutique) {
         setBoutiques(current => current.map(item => item.id === payload.boutique.id ? payload.boutique : item));
+        setPreviewDoc(current => current?.boutiqueId === payload.boutique.id
+          ? { ...current, status: status === 'approved' ? 'verified' : 'rejected' }
+          : current);
       }
-      alert(status === 'approved' ? 'Le compte est maintenant actif.' : 'La demande a été refusée et le compte reste bloqué.');
+      alert(status === 'approved' ? 'La boutique est maintenant active.' : 'La demande boutique a été refusée.');
     } catch (decisionError: any) {
       alert(decisionError?.message || 'Impossible d’enregistrer cette décision.');
     } finally {
@@ -264,17 +347,166 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     }
   };
 
+  const handleSubmitModerationNote = async () => {
+    const selectedProduct = products.find(product => product.id === selectedModerationProductId);
+    const text = moderationComment.trim();
+    setModerationFeedback(null);
+    setModerationNotesError(null);
+    if (!selectedProduct || text.length < 3 || text.length > 1000) {
+      setModerationNotesError('Écrivez un commentaire de 3 à 1000 caractères.');
+      return;
+    }
+
+    setModerationSubmitting(true);
+    try {
+      const response = await firebaseAuthenticatedFetch('/api/admin/moderation-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: selectedProduct.id, text, severity: moderationSeverity }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Le commentaire n’a pas pu être envoyé.');
+      setModerationNotes(current => [payload as ModerationNote, ...current]);
+      setModerationComment('');
+      setModerationFeedback('Commentaire envoyé au gérant.');
+    } catch (submitError) {
+      setModerationNotesError(submitError instanceof Error ? submitError.message : 'Le commentaire n’a pas pu être envoyé.');
+    } finally {
+      setModerationSubmitting(false);
+    }
+  };
+
+  const openModerationBoutique = (boutiqueId: string) => {
+    setSelectedModerationBoutiqueId(boutiqueId);
+    setSelectedModerationCollection(null);
+    setSelectedModerationProductId(null);
+    setProductSearch('');
+    setModerationFeedback(null);
+    setModerationVisibleLimit(12);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openModerationCollection = (collectionName: string) => {
+    setSelectedModerationCollection(collectionName);
+    setSelectedModerationProductId(null);
+    setProductSearch('');
+    setModerationFeedback(null);
+    setModerationVisibleLimit(12);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openModerationProduct = (productId: string) => {
+    setSelectedModerationProductId(productId);
+    setModerationComment('');
+    setModerationFeedback(null);
+    setModerationNotesError(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openBoutiqueDossier = (boutique: Boutique) => {
+    setPreviewDoc({
+      boutiqueId: boutique.id,
+      boutiqueName: boutique.name,
+      docName: boutique.verificationDocName || 'Document de vérification',
+      docType: 'KBIS',
+      status: boutique.isSuspended
+        ? 'suspended'
+        : boutique.isVerified
+          ? 'verified'
+          : boutique.verificationStatus === 'rejected'
+            ? 'rejected'
+            : 'pending',
+    });
+    setActiveTab('documents');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleAdminBack = () => {
+    if (activeTab === 'products') {
+      if (selectedModerationProductId) {
+        setSelectedModerationProductId(null);
+        setModerationFeedback(null);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      if (selectedModerationCollection) {
+        setSelectedModerationCollection(null);
+        setProductSearch('');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      if (selectedModerationBoutiqueId) {
+        setSelectedModerationBoutiqueId(null);
+        setModerationBoutiqueSearch('');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+    }
+    if (activeTab !== 'stats') {
+      setActiveTab('stats');
+      setPreviewDoc(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    onBack?.();
+  };
+
   // Calculations for Stats
   const totalBoutiquesCount = boutiques.length;
   const totalProductsCount = products.length;
-  const totalUsersCount = users.length;
-  const pendingValidationCount = boutiques.filter(b => !b.isVerified && !b.isSuspended).length;
   const pendingAccounts = users
-    .filter(user => user.role !== UserRole.ADMIN && user.accountStatus === 'pending')
+    .filter(user => user.role === UserRole.BOUTIQUE
+      && user.accountStatus === 'pending'
+      && boutiques.some(boutique => boutique.id === user.boutiqueId || boutique.ownerId === user.uid))
     .sort((a, b) => new Date(b.approvalSubmittedAt || b.createdAt).getTime() - new Date(a.approvalSubmittedAt || a.createdAt).getTime());
   const pendingAccountCount = pendingAccounts.length;
+  const pendingValidationCount = pendingAccountCount;
   const verifiedBoutiquesCount = boutiques.filter(b => b.isVerified && !b.isSuspended).length;
   const suspendedBoutiquesCount = boutiques.filter(b => b.isSuspended).length;
+  const recentActivities = [
+    ...boutiques.map(boutique => {
+      const status = boutique.isSuspended
+        ? 'warning'
+        : boutique.isVerified
+          ? 'success'
+          : boutique.verificationStatus === 'rejected'
+            ? 'warning'
+            : 'info';
+      const text = boutique.isSuspended
+        ? `Boutique suspendue : ${boutique.name}`
+        : boutique.isVerified
+          ? `Boutique approuvée : ${boutique.name}`
+          : boutique.verificationStatus === 'rejected'
+            ? `Demande refusée : ${boutique.name}`
+            : `Demande d’ouverture reçue : ${boutique.name}`;
+      return {
+        id: `boutique-${boutique.id}`,
+        timestamp: boutique.verificationReviewedAt || boutique.verificationSubmittedAt || boutique.updatedAt || boutique.createdAt,
+        text,
+        status,
+      };
+    }),
+    ...users
+      .filter(profile => profile.role === UserRole.CLIENT)
+      .map(profile => ({
+        id: `client-${profile.uid}`,
+        timestamp: profile.createdAt,
+        text: `Compte client créé : ${profile.displayName || profile.email}`,
+        status: 'info',
+      })),
+    ...products.map(product => ({
+      id: `product-${product.id}`,
+      timestamp: product.createdAt,
+      text: `Article ajouté : ${product.name} par ${product.boutiqueName}`,
+      status: 'success',
+    })),
+  ]
+    .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0))
+    .slice(0, 50)
+    .map(activity => ({
+      ...activity,
+      time: new Date(activity.timestamp).toLocaleString('fr-FR'),
+    }));
 
   // Filter Boutique lists
   const filteredBoutiques = boutiques.filter(b => {
@@ -282,19 +514,50 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     return b.name.toLowerCase().includes(query) || b.slug.toLowerCase().includes(query) || b.id.toLowerCase().includes(query);
   });
 
-  // Filter Products lists
-  const filteredProducts = products.filter(p => {
-    const query = productSearch.toLowerCase();
-    const matchesSearch = p.name.toLowerCase().includes(query) || p.boutiqueName.toLowerCase().includes(query);
-    const matchesBoutique = selectedBoutiqueFilter === 'all' || p.boutiqueId === selectedBoutiqueFilter;
-    return matchesSearch && matchesBoutique;
+  const selectedModerationBoutique = boutiques.find(boutique => boutique.id === selectedModerationBoutiqueId);
+  const selectedModerationProduct = products.find(product => product.id === selectedModerationProductId);
+  const moderationBoutiqueProducts = selectedModerationBoutiqueId
+    ? products.filter(product => product.boutiqueId === selectedModerationBoutiqueId)
+    : [];
+  const moderationCatalogueName = (product: Product) => (
+    product.collection?.trim() || product.category?.trim() || 'Sans catalogue'
+  );
+  const moderationCatalogues = Array.from(
+    moderationBoutiqueProducts.reduce<Map<string, Product[]>>((catalogues, product) => {
+      const name = moderationCatalogueName(product);
+      catalogues.set(name, [...(catalogues.get(name) || []), product]);
+      return catalogues;
+    }, new Map()),
+  )
+    .map(([name, catalogueProducts]) => ({ name, products: catalogueProducts }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  const selectedCatalogueProducts = selectedModerationCollection
+    ? moderationBoutiqueProducts.filter(product => moderationCatalogueName(product) === selectedModerationCollection)
+    : [];
+  const normalizedProductSearch = productSearch.trim().toLocaleLowerCase('fr');
+  const searchedCatalogueProducts = selectedCatalogueProducts.filter(product => (
+    !normalizedProductSearch
+    || product.name.toLocaleLowerCase('fr').includes(normalizedProductSearch)
+    || product.category.toLocaleLowerCase('fr').includes(normalizedProductSearch)
+    || (product.sku || '').toLocaleLowerCase('fr').includes(normalizedProductSearch)
+  ));
+  const visibleModerationProducts = searchedCatalogueProducts.slice(0, moderationVisibleLimit);
+  const filteredModerationBoutiques = boutiques.filter(boutique => {
+    const query = moderationBoutiqueSearch.trim().toLocaleLowerCase('fr');
+    return !query
+      || boutique.name.toLocaleLowerCase('fr').includes(query)
+      || boutique.location?.city?.toLocaleLowerCase('fr').includes(query)
+      || boutique.slug.toLocaleLowerCase('fr').includes(query);
   });
 
   // Filter Users list
   const filteredUsers = users
     .filter(u => {
       const query = userSearch.toLowerCase();
-      return u.displayName.toLowerCase().includes(query) || u.email.toLowerCase().includes(query) || u.role.toLowerCase().includes(query);
+      return u.role === UserRole.BOUTIQUE
+        && u.accountStatus === 'pending'
+        && boutiques.some(boutique => boutique.id === u.boutiqueId || boutique.ownerId === u.uid)
+        && (u.displayName.toLowerCase().includes(query) || u.email.toLowerCase().includes(query));
     })
     .sort((a, b) => {
       const aPending = a.accountStatus === 'pending' ? 1 : 0;
@@ -317,11 +580,11 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     },
     {
       id: 'users',
-      title: 'Gestion des Utilisateurs',
-      category: 'Registre Membres',
-      description: 'Consultez les membres inscrits (Clients Élite, Boutiques & Admins) et administrez la sécurité.',
+      title: 'Demandes Boutique',
+      category: 'Validation des ouvertures',
+      description: 'Examinez les informations et les documents transmis avant d’autoriser une boutique.',
       icon: Users,
-      badge: pendingAccountCount > 0 ? `${pendingAccountCount} À confirmer` : `${totalUsersCount} Membres`,
+      badge: pendingAccountCount > 0 ? `${pendingAccountCount} À confirmer` : 'Aucune attente',
       badgeStyle: pendingAccountCount > 0 ? 'bg-amber-950/50 text-amber-400 border-amber-800/50 animate-pulse' : 'bg-blue-950/40 text-blue-400 border-blue-800/40',
       action: () => setActiveTab('users')
     },
@@ -333,7 +596,12 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       icon: ShoppingBag,
       badge: `${totalProductsCount} Articles`,
       badgeStyle: 'bg-zinc-900 text-zinc-300 border-zinc-800',
-      action: () => setActiveTab('products')
+      action: () => {
+        setSelectedModerationBoutiqueId(null);
+        setSelectedModerationCollection(null);
+        setSelectedModerationProductId(null);
+        setActiveTab('products');
+      }
     },
     {
       id: 'qa-agents',
@@ -356,22 +624,6 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       action: () => onOpenQA?.()
     },
     {
-      id: 'fennco-ai',
-      title: 'Centre FENNCO IA & Styliste',
-      category: 'Intelligence Artificielle',
-      description: 'Accédez au moteur de stylisme intelligent FENNCO IA pour évaluer les recommandations de mode.',
-      icon: Sparkles,
-      badge: 'Styliste Virtuel',
-      badgeStyle: 'bg-[#D4AF37]/15 text-[#D4AF37] border-[#D4AF37]/40',
-      action: () => {
-        if (onNavigateToStylist) {
-          onNavigateToStylist();
-        } else if (onOpenQA) {
-          onOpenQA();
-        }
-      }
-    },
-    {
       id: 'audit-log',
       title: 'Journal d’Audit & Sécurité',
       category: 'Surveillance Temps Réel',
@@ -379,10 +631,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       icon: ShieldAlert,
       badge: '100% SÉCURISÉ',
       badgeStyle: 'bg-emerald-950/40 text-emerald-400 border-emerald-800/40',
-      action: () => {
-        const el = document.getElementById('audit-log-section');
-        if (el) el.scrollIntoView({ behavior: 'smooth' });
-      }
+      action: () => setActiveTab('audit')
     },
     {
       id: 'system-settings',
@@ -393,26 +642,6 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       badge: adminRole || 'Souverain',
       badgeStyle: 'bg-zinc-900 text-zinc-300 border-zinc-800',
       action: () => setShowAvatarModal(true)
-    },
-    {
-      id: 'stats-overview',
-      title: 'Statistiques & Métriques',
-      category: 'Analytics Général',
-      description: 'Supervisez la croissance globale, la répartition par catégorie et les indicateurs du marché.',
-      icon: BarChart3,
-      badge: 'Vue Synthétique',
-      badgeStyle: 'bg-[#D4AF37]/10 text-[#D4AF37] border-[#D4AF37]/30',
-      action: () => setActiveTab('stats')
-    },
-    {
-      id: 'data-sync',
-      title: 'Synchronisation Données',
-      category: 'Base de Données',
-      description: 'Actualisez instantanément la base de données Firestore et purgez le cache de l’application.',
-      icon: RotateCcw,
-      badge: 'Direct Refresh',
-      badgeStyle: 'bg-zinc-900 text-zinc-400 border-zinc-800',
-      action: () => fetchAllData()
     }
   ];
 
@@ -426,10 +655,10 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       
       {/* En-tête volontairement minimal : retour + titre uniquement. */}
       <header className="sticky top-0 border-b border-[#151515] bg-[#0A0A0A]/95 backdrop-blur-md shrink-0 z-40 px-4 sm:px-6 pt-[45px] pb-4 w-full max-w-full">
-        <div className="relative flex items-center gap-4 w-full min-h-10">
+        <div className="grid min-h-10 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
           {onBack && (
             <button
-              onClick={onBack}
+              onClick={handleAdminBack}
               className="flex items-center gap-2 px-3.5 py-2 bg-[#0F0F0F] hover:bg-zinc-800 active:scale-95 border border-[#222222] hover:border-[#D4AF37]/60 text-zinc-300 hover:text-[#D4AF37] rounded-xl text-xs font-mono font-bold tracking-wider uppercase transition-all shadow-md group cursor-pointer shrink-0"
               title="Retour à l'application"
             >
@@ -438,9 +667,23 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
             </button>
           )}
 
-          <h1 className="serif-title absolute left-1/2 -translate-x-1/2 text-xl sm:text-2xl font-light tracking-wide text-white text-center whitespace-nowrap">
-            Store<span className="text-[#D4AF37] font-semibold">Hub</span><span className="text-[10px] uppercase font-mono tracking-widest text-zinc-500 ml-1">HQ</span>
+          <h1 className="serif-title min-w-0 truncate text-center text-lg font-light tracking-wide text-white sm:text-xl">
+            Store<span className="font-semibold text-[#D4AF37]">Hub</span><span className="ml-1 hidden font-mono text-[9px] uppercase tracking-widest text-zinc-500 min-[390px]:inline">HQ</span>
           </h1>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (onNavigateToStylist) onNavigateToStylist();
+              else onOpenQA?.();
+            }}
+            className="flex min-h-10 items-center gap-1.5 rounded-xl border border-[#D4AF37]/45 bg-[#0F0F0F] px-2 py-2 font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-[#D4AF37] shadow-md transition-all hover:border-[#D4AF37] hover:bg-[#17130A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]/50 active:scale-95 sm:px-2.5 sm:text-[10px]"
+            title="Ouvrir FENNCO IA"
+            aria-label="Ouvrir FENNCO IA"
+          >
+            <FennecMascot size="sm" showGlow={false} className="-my-1" />
+            <span>FENNCO IA</span>
+          </button>
         </div>
       </header>
 
@@ -480,7 +723,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                         Bienvenue dans le <span className="text-[#D4AF37] animate-pulse drop-shadow-[0_0_8px_rgba(212,175,55,0.55)]">Quartier Général</span> StoreHub
                       </h2>
                       <p dir="rtl" className="text-zinc-400 text-xs mt-3 font-light leading-relaxed w-full text-right">
-                        Régulez le catalogue général de mode de luxe, validez de nouveaux partenaires de boutiques prestigieux et gérez le registre des membres inscrits.
+                        Régulez le catalogue général, examinez les demandes d’ouverture de boutique et supervisez les comptes actifs.
                       </p>
                       <button
                         onClick={fetchAllData}
@@ -519,15 +762,20 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
 
                     {pendingAccountCount > 0 && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
-                        {pendingAccounts.slice(0, 4).map(account => (
-                          <button key={account.uid} onClick={() => setActiveTab('users')} className="text-left p-3.5 rounded-xl bg-black/25 border border-[#D4AF37]/15 hover:border-[#D4AF37]/45 transition-colors">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-xs text-white font-semibold truncate">{account.displayName || account.email}</span>
-                              <span className="text-[8px] font-mono uppercase text-amber-400 shrink-0">{account.role === UserRole.BOUTIQUE ? 'Boutique' : 'Client'}</span>
-                            </div>
-                            <p className="text-[9px] font-mono text-zinc-500 truncate mt-1">{account.email}</p>
-                          </button>
-                        ))}
+                        {pendingAccounts.slice(0, 4).map(account => {
+                          const boutique = boutiques.find(item => item.id === account.boutiqueId || item.ownerId === account.uid);
+                          if (!boutique) return null;
+                          return (
+                            <button
+                              key={account.uid}
+                              onClick={() => openBoutiqueDossier(boutique)}
+                              className="flex items-center gap-3 rounded-xl bg-black/25 border border-[#D4AF37]/15 p-3.5 text-left hover:border-[#D4AF37]/45 active:scale-[0.98] transition-all"
+                            >
+                              <img src={boutique.logo || account.photoURL} alt={boutique.name} className="h-11 w-11 rounded-full object-cover border border-[#D4AF37]/25" />
+                              <span className="min-w-0 truncate text-xs text-white font-semibold">{boutique.name}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </section>
@@ -570,54 +818,10 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                       </div>
                     </div>
 
-                    {/* Feature Shortcut Cards Grid (STRICT MAXIMUM 2 CARDS PER ROW, EXCEPT FENNCO IA GRAND CARD) */}
+                    {/* Feature Shortcut Cards Grid (STRICT MAXIMUM 2 CARDS PER ROW) */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       {filteredFeatures.map((feat) => {
                         const Icon = feat.icon;
-                        const isFennco = feat.id === 'fennco-ai';
-
-                        if (isFennco) {
-                          return (
-                            <button
-                              key={feat.id}
-                              onClick={feat.action}
-                              className="col-span-1 sm:col-span-2 p-5 sm:p-6 bg-gradient-to-r from-[#16130B] via-[#0D0D0D] to-[#16130B] border border-[#D4AF37]/60 shadow-[0_0_30px_rgba(212,175,55,0.2)] hover:border-[#D4AF37] hover:shadow-[0_0_40px_rgba(212,175,55,0.3)] rounded-2xl flex flex-col items-center text-center group transition-all duration-300 relative overflow-hidden cursor-pointer w-full"
-                            >
-                              {/* Background Gold Glow Effect */}
-                              <div className="absolute -right-12 -bottom-12 w-48 h-48 bg-[#D4AF37]/10 rounded-full blur-3xl group-hover:bg-[#D4AF37]/20 transition-all duration-500 pointer-events-none" />
-
-                              {/* Top Badge Row */}
-                              <div className="flex items-center justify-center gap-2 mb-3 w-full">
-                                <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-[#D4AF37] font-bold">INTELLIGENCE ARTIFICIELLE ÉLITE</span>
-                                <span className="px-2.5 py-0.5 rounded-full border border-[#D4AF37]/50 bg-[#D4AF37]/15 text-[#D4AF37] text-[9px] font-mono font-bold uppercase tracking-wider animate-pulse">
-                                  {feat.badge}
-                                </span>
-                              </div>
-
-                              {/* [ Grand Icone Centrée ] */}
-                              <div className="w-14 h-14 bg-gradient-to-br from-[#262010] to-[#0A0A0A] border border-[#D4AF37]/60 text-[#D4AF37] rounded-2xl flex items-center justify-center mx-auto group-hover:scale-110 transition-all duration-300 shadow-[0_0_20px_rgba(212,175,55,0.3)] my-2 shrink-0">
-                                <FennecMascot size="lg" showGlow={true} />
-                              </div>
-
-                              {/* [ Grand Titre Centré ] */}
-                              <h4 className="serif-title text-base sm:text-xl font-bold text-[#D4AF37] group-hover:text-white transition-colors text-center w-full mb-1.5">
-                                {feat.title}
-                              </h4>
-
-                              {/* [ Grand Texte Descriptif ] */}
-                              <p className="text-xs sm:text-sm text-zinc-300 font-light leading-relaxed text-center max-w-xl mx-auto mb-4">
-                                {feat.description}
-                              </p>
-
-                              {/* Bottom Action Button */}
-                              <div className="px-6 py-2.5 bg-gradient-to-r from-[#D4AF37] to-[#AA8828] text-black font-bold rounded-xl text-xs font-mono uppercase tracking-widest flex items-center gap-2 shadow-[0_4px_15px_rgba(212,175,55,0.3)] group-hover:scale-105 transition-all">
-                                <span>Lancer FENNCO IA</span>
-                                <Sparkles className="w-3.5 h-3.5 text-black" />
-                              </div>
-                            </button>
-                          );
-                        }
-
                         return (
                           <button
                             key={feat.id}
@@ -690,22 +894,15 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                       </div>
                     </button>
 
-                    {/* Stat 3: Utilisateurs (Registre Membres) */}
-                    <button 
-                      onClick={() => setActiveTab('users')}
-                      className="p-4 sm:p-6 bg-gradient-to-b from-[#0F0F0F] to-[#090909] border border-[#161616] rounded-xl flex flex-col items-center justify-center text-center shadow-lg relative overflow-hidden group hover:border-[#D4AF37]/40 hover:bg-zinc-900/40 transition-all duration-300 min-h-[140px] sm:min-h-[160px] cursor-pointer w-full h-full min-w-0"
-                    >
-                      <div className="w-10 h-10 bg-zinc-900/90 rounded-full flex items-center justify-center text-[#D4AF37] border border-[#1C1C1C] mb-2 sm:mb-2.5 group-hover:scale-110 transition-transform shrink-0 mx-auto">
+                    {/* Stat 3: Clients actifs, sans validation administrative */}
+                    <div className="p-4 sm:p-6 bg-gradient-to-b from-[#0F0F0F] to-[#090909] border border-[#161616] rounded-xl flex flex-col items-center justify-center text-center shadow-lg relative overflow-hidden min-h-[140px] sm:min-h-[160px] w-full h-full min-w-0">
+                      <div className="w-10 h-10 bg-zinc-900/90 rounded-full flex items-center justify-center text-[#D4AF37] border border-[#1C1C1C] mb-2 sm:mb-2.5 shrink-0 mx-auto">
                         <Users className="w-5 h-5" />
                       </div>
-                      <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider sm:tracking-widest text-zinc-400 font-medium leading-tight text-center truncate w-full">COMMUNAUTÉ INSCRITE</span>
-                      <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-white my-1 sm:my-1.5 text-center">{totalUsersCount}</span>
-                      <div className="flex items-center justify-center gap-1.5 text-[8px] sm:text-[9px] font-mono text-zinc-500 flex-wrap w-full min-w-0 text-center">
-                        <span>{users.filter(u => u.role === UserRole.CLIENT).length} Clients</span>
-                        <span>•</span>
-                        <span>{users.filter(u => u.role === UserRole.BOUTIQUE).length} Boutiques</span>
-                      </div>
-                    </button>
+                      <span className="font-mono text-[9px] sm:text-[10px] uppercase tracking-wider sm:tracking-widest text-zinc-400 font-medium leading-tight text-center truncate w-full">CLIENTS ACTIFS</span>
+                      <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-white my-1 sm:my-1.5 text-center">{users.filter(u => u.role === UserRole.CLIENT && u.accountStatus === 'approved').length}</span>
+                      <span className="text-[8px] sm:text-[9px] font-mono text-zinc-500 text-center">Accès direct sans validation</span>
+                    </div>
 
                     {/* Stat 4: Pending actions (VJ) */}
                     <button 
@@ -767,102 +964,6 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                         <span>Lancer la vérification à tout moment ›</span>
                       </div>
                     </button>
-                  </div>
-
-                  {/* BOTTOM SECTIONS OF OVERVIEW */}
-                  <div className="grid grid-cols-2 gap-4 sm:gap-6">
-                    {/* Left: Pending boutiques detailed and modern lists */}
-                    <div className="col-span-1 bg-[#0A0A0A] border border-[#141414] rounded-2xl p-6 space-y-4">
-                      <div className="flex items-center justify-between border-b border-[#141414] pb-4">
-                        <div className="flex items-center gap-2">
-                          <FileCheck2 className="w-4 h-4 text-[#D4AF37]" />
-                          <h3 className="font-mono text-xs uppercase tracking-wider font-semibold text-white">Boutiques en attente de vérification</h3>
-                        </div>
-                        {pendingValidationCount > 0 && (
-                          <span className="px-2 py-0.5 bg-amber-950/40 border border-amber-900/40 text-amber-400 rounded text-[8px] font-mono font-bold animate-pulse">
-                            IMPORTANT
-                          </span>
-                        )}
-                      </div>
-
-                      {boutiques.filter(b => !b.isVerified && !b.isSuspended).length === 0 ? (
-                        <div className="py-12 text-center space-y-3">
-                          <div className="w-12 h-12 rounded-full bg-emerald-950/20 border border-emerald-900/30 text-emerald-400 flex items-center justify-center mx-auto">
-                            <Check className="w-6 h-6" />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-white text-xs font-medium">Toutes les demandes ont été traitées !</p>
-                            <p className="text-zinc-500 text-[10px] font-light">Aucune boutique ne requiert d'attention immédiate pour l'instant.</p>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                          {boutiques.filter(b => !b.isVerified && !b.isSuspended).map(b => (
-                            <div key={b.id} className="p-4 bg-[#0D0D0D] border border-[#161616] rounded-xl flex items-center justify-between hover:border-[#D4AF37]/20 transition-all duration-300">
-                              <div className="flex items-center gap-3.5">
-                                <img src={b.logo} alt={b.name} className="w-10 h-10 rounded-full object-cover border border-[#D4AF37]/20 bg-zinc-900 shrink-0" />
-                                <div>
-                                  <p className="text-xs font-semibold text-white">{b.name}</p>
-                                  <p className="text-[9px] text-zinc-500 font-mono mt-0.5">{b.slug}</p>
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => {
-                                  setActiveTab('documents');
-                                  setPreviewDoc({
-                                    boutiqueId: b.id,
-                                    boutiqueName: b.name,
-                                    docName: b.verificationDocName || 'KBIS_Registre_Commerce.pdf',
-                                    docType: 'KBIS',
-                                    status: b.verificationStatus === 'rejected' ? 'rejected' : 'pending'
-                                  });
-                                }}
-                                className="px-3 py-1.5 bg-zinc-900 hover:bg-[#D4AF37] text-zinc-300 hover:text-black rounded-md text-[9px] font-mono tracking-widest uppercase transition-all"
-                              >
-                                Examiner le dossier
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Right: Live audit log activities panel */}
-                    <div className="col-span-1 bg-[#0A0A0A] border border-[#141414] rounded-2xl p-6 flex flex-col justify-between">
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-2 border-b border-[#141414] pb-4">
-                          <ShieldAlert className="w-4 h-4 text-[#D4AF37]" />
-                          <h3 className="font-mono text-xs uppercase tracking-wider font-semibold text-white">Journal d'Audit & Sécurité</h3>
-                        </div>
-
-                        <div className="space-y-4">
-                          {recentActivities.map(act => (
-                            <div key={act.id} className="flex gap-3 text-xs leading-relaxed relative">
-                              {/* Left line decorator */}
-                              <div className="flex flex-col items-center">
-                                <div className={`w-2 h-2 rounded-full mt-1.5 ${
-                                  act.status === "success" ? "bg-emerald-500" :
-                                  act.status === "warning" ? "bg-amber-500" :
-                                  act.status === "info" ? "bg-blue-500" : "bg-zinc-600"
-                                }`} />
-                                <div className="w-[1px] bg-zinc-900 flex-grow mt-1" />
-                              </div>
-                              <div className="flex-grow pb-1 min-w-0">
-                                <div className="flex justify-between items-start gap-2">
-                                  <p className="text-zinc-300 font-light truncate">{act.text}</p>
-                                  <span className="text-[9px] text-zinc-500 font-mono shrink-0 whitespace-nowrap">{act.time}</span>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="pt-5 border-t border-[#141414] text-[9px] font-mono text-zinc-500 flex justify-between items-center mt-6">
-                        <span>Intégrité de la Base de Données</span>
-                        <span className="text-emerald-500 font-bold uppercase">100% SÉCURISÉ</span>
-                      </div>
-                    </div>
                   </div>
                 </div>
               )}
@@ -953,32 +1054,36 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                             </div>
 
                             {/* Card Administrative Actions Bar */}
-                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#121212]">
+                            <div className="grid grid-cols-1 gap-2 border-t border-[#121212] pt-2">
                               
                               {/* Toggle certification */}
                               <button
                                 onClick={() => handleUpdateBoutique(b.id, { isVerified: !b.isVerified })}
-                                className={`py-2 px-2.5 rounded-lg text-[9px] font-mono tracking-wider uppercase font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                                disabled={boutiqueActionBusyId === b.id}
+                                aria-busy={boutiqueActionBusyId === b.id}
+                                className={`flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg px-2 py-2 font-mono text-[9px] font-semibold uppercase tracking-wider cursor-pointer transition-all ${
                                   b.isVerified 
                                     ? 'bg-[#101010] border border-zinc-800 text-zinc-500 hover:text-white' 
                                     : 'bg-emerald-950/20 hover:bg-emerald-950/40 border border-emerald-900/40 text-emerald-400'
-                                }`}
+                                } disabled:cursor-wait disabled:opacity-50`}
                               >
                                 <Check className="w-3 h-3 shrink-0" />
-                                <span>{b.isVerified ? 'Révoquer' : 'Certifier'}</span>
+                                <span className="min-w-0 truncate">{b.isVerified ? 'Révoquer' : 'Certifier'}</span>
                               </button>
 
                               {/* Toggle suspension */}
                               <button
                                 onClick={() => handleUpdateBoutique(b.id, { isSuspended: !b.isSuspended })}
-                                className={`py-2 px-2.5 rounded-lg text-[9px] font-mono tracking-wider uppercase font-semibold cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                                disabled={boutiqueActionBusyId === b.id}
+                                aria-busy={boutiqueActionBusyId === b.id}
+                                className={`flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg px-2 py-2 font-mono text-[9px] font-semibold uppercase tracking-wider cursor-pointer transition-all ${
                                   b.isSuspended 
                                     ? 'bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/40 text-amber-400' 
                                     : 'bg-red-950/15 hover:bg-red-950/30 border border-red-900/40 text-red-400'
-                                }`}
+                                } disabled:cursor-wait disabled:opacity-50`}
                               >
                                 {b.isSuspended ? <Unlock className="w-3 h-3 shrink-0" /> : <Lock className="w-3 h-3 shrink-0" />}
-                                <span>{b.isSuspended ? 'Réactiver' : 'Suspendre'}</span>
+                                <span className="min-w-0 truncate">{b.isSuspended ? 'Réactiver' : 'Suspendre'}</span>
                               </button>
 
                             </div>
@@ -1002,363 +1107,520 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
 
               {/* TAB 3: CATALOG MODERATION (Cabinet de Modération d'Articles) */}
               {activeTab === 'products' && (
-                <div className="space-y-4">
-                  {/* Filters Bar */}
-                  <div className="bg-[#0A0A0A] border border-[#141414] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row gap-4 items-stretch sm:items-center justify-between w-full max-w-full relative z-30 box-border">
-                    <div className="relative w-full sm:w-[150px] shrink min-w-0">
-                      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500 w-4 h-4" />
-                      <input
-                        type="text"
-                        value={productSearch}
-                        onChange={e => setProductSearch(e.target.value)}
-                        placeholder="Rechercher..."
-                        className="w-full bg-[#101010] border border-[#1A1A1A] rounded-xl pl-10 pr-3 py-2 text-xs text-white placeholder-zinc-500 outline-none focus:border-[#D4AF37] transition-all font-sans"
-                      />
-                    </div>
+                <div className="space-y-4" aria-label="Module de modération du catalogue">
+                  {!selectedModerationBoutique ? (
+                    <>
+                      <section className="rounded-2xl border border-[#D4AF37]/35 bg-[linear-gradient(145deg,#10100d_0%,#090909_72%)] p-5 shadow-[0_18px_50px_rgba(0,0,0,0.28)]">
+                        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#D4AF37]">Gestion par boutique</p>
+                        <h2 className="serif-title mt-2 text-2xl text-white">Modération du catalogue</h2>
+                        <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-400">
+                          Choisissez une boutique pour consulter ses catalogues, examiner ses articles et communiquer directement avec son gérant.
+                        </p>
+                      </section>
 
-                    <div className="relative w-full sm:w-auto shrink min-w-0 z-40">
-                      <button
-                        type="button"
-                        onClick={() => setIsBoutiqueFilterOpen(!isBoutiqueFilterOpen)}
-                        className="w-full sm:w-auto bg-[#101010] border border-[#1A1A1A] hover:border-[#D4AF37]/50 text-xs text-zinc-200 rounded-xl px-4 py-2.5 outline-none focus:border-[#D4AF37] font-sans cursor-pointer font-medium min-h-[38px] flex items-center justify-between gap-3 transition-all"
-                      >
-                        <span className="truncate text-zinc-200">Filtre par boutique</span>
-                        {selectedBoutiqueFilter !== 'all' && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] shrink-0" title="Filtre actif" />
-                        )}
-                        <ChevronDown className={`w-4 h-4 text-[#D4AF37] shrink-0 transition-transform duration-200 ${isBoutiqueFilterOpen ? 'rotate-180' : ''}`} />
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                        <input
+                          type="search"
+                          value={moderationBoutiqueSearch}
+                          onChange={event => setModerationBoutiqueSearch(event.target.value)}
+                          placeholder="Rechercher une boutique ou une ville..."
+                          className="min-h-12 w-full rounded-xl border border-[#202020] bg-[#0B0B0B] py-3 pl-11 pr-4 text-sm text-white outline-none transition-colors placeholder:text-zinc-600 focus:border-[#D4AF37] focus-visible:ring-2 focus-visible:ring-[#D4AF37]/25"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500" aria-live="polite">
+                        <span>{filteredModerationBoutiques.length} boutique{filteredModerationBoutiques.length > 1 ? 's' : ''}</span>
+                        <span>{totalProductsCount} articles au total</span>
+                      </div>
+
+                      {filteredModerationBoutiques.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-[#282828] bg-[#090909] px-5 py-14 text-center">
+                          <Building2 className="mx-auto h-8 w-8 text-zinc-700" />
+                          <p className="mt-3 text-sm text-zinc-300">Aucune boutique ne correspond à cette recherche.</p>
+                          {moderationBoutiqueSearch && (
+                            <button type="button" onClick={() => setModerationBoutiqueSearch('')} className="mt-4 min-h-11 rounded-xl border border-[#D4AF37]/45 px-4 font-mono text-[10px] uppercase tracking-wider text-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]">
+                              Effacer la recherche
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          {filteredModerationBoutiques.map(boutique => {
+                            const boutiqueProducts = products.filter(product => product.boutiqueId === boutique.id);
+                            const catalogueCount = new Set(boutiqueProducts.map(moderationCatalogueName)).size;
+                            const statusLabel = boutique.isSuspended ? 'Suspendue' : boutique.isVerified ? 'Active' : 'En attente';
+                            return (
+                              <button
+                                key={boutique.id}
+                                type="button"
+                                onClick={() => openModerationBoutique(boutique.id)}
+                                className="group flex min-h-[104px] w-full items-center gap-3 rounded-2xl border border-[#1C1C1C] bg-[#0A0A0A] p-3 text-left transition-all hover:border-[#D4AF37]/60 hover:bg-[#0E0E0C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.99]"
+                              >
+                                <img src={boutique.logo} alt={boutique.name} className="h-16 w-16 shrink-0 rounded-xl border border-[#D4AF37]/25 object-cover" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex items-center gap-2">
+                                    <strong className="serif-title block truncate text-base text-white">{boutique.name}</strong>
+                                    <span className={`h-2 w-2 shrink-0 rounded-full ${boutique.isSuspended ? 'bg-red-400' : boutique.isVerified ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                                  </span>
+                                  <span className="mt-1 block truncate text-xs text-zinc-500">{boutique.location?.city || 'Ville non renseignée'} · {statusLabel}</span>
+                                  <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-[#D4AF37]">
+                                    <span>{boutiqueProducts.length} articles</span>
+                                    <span>{catalogueCount} catalogues</span>
+                                  </span>
+                                </span>
+                                <ChevronRight className="h-5 w-5 shrink-0 text-zinc-600 transition-transform group-hover:translate-x-0.5 group-hover:text-[#D4AF37]" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  ) : selectedModerationProduct ? (
+                    <>
+                      <button type="button" onClick={handleAdminBack} className="flex min-h-11 items-center gap-2 rounded-xl border border-[#252525] bg-[#0B0B0B] px-4 font-mono text-[10px] uppercase tracking-wider text-zinc-300 transition-colors hover:border-[#D4AF37]/60 hover:text-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]">
+                        <ArrowLeft className="h-4 w-4" /> Retour aux articles
                       </button>
 
-                      {isBoutiqueFilterOpen && (
-                        <>
-                          {/* Backdrop to close on click outside */}
-                          <div 
-                            className="fixed inset-0 z-40" 
-                            onClick={() => setIsBoutiqueFilterOpen(false)} 
-                          />
+                      <section className="overflow-hidden rounded-2xl border border-[#202020] bg-[#090909]">
+                        <div className="flex flex-col">
+                          <img src={selectedModerationProduct.images?.[0]?.url} alt={selectedModerationProduct.name} className="aspect-[4/3] max-h-80 w-full bg-[#111] object-cover" />
+                          <div className="p-5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-[#D4AF37]/35 bg-[#D4AF37]/10 px-2.5 py-1 font-mono text-[9px] uppercase tracking-wider text-[#D4AF37]">{selectedModerationProduct.category}</span>
+                              <span className={`rounded-full border px-2.5 py-1 font-mono text-[9px] uppercase tracking-wider ${selectedModerationProduct.isAvailable ? 'border-emerald-800/70 bg-emerald-950/30 text-emerald-300' : 'border-red-900/70 bg-red-950/30 text-red-300'}`}>
+                                {selectedModerationProduct.isAvailable ? 'En vitrine' : 'Indisponible'}
+                              </span>
+                            </div>
+                            <h2 className="serif-title mt-3 text-2xl text-white">{selectedModerationProduct.name}</h2>
+                            <p className="mt-1 text-xs text-zinc-500">{selectedModerationBoutique.name} · {moderationCatalogueName(selectedModerationProduct)}</p>
+                            <p className="mt-4 font-mono text-lg text-[#D4AF37]">{selectedModerationProduct.price.toLocaleString('fr-FR')} DA</p>
+                            <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                              <div className="rounded-xl border border-[#1D1D1D] bg-black/30 p-3"><dt className="text-zinc-600">Stock</dt><dd className="mt-1 text-white">{selectedModerationProduct.stock ?? 'Non renseigné'}</dd></div>
+                              <div className="rounded-xl border border-[#1D1D1D] bg-black/30 p-3"><dt className="text-zinc-600">Référence</dt><dd className="mt-1 truncate text-white">{selectedModerationProduct.sku || selectedModerationProduct.id.slice(-8)}</dd></div>
+                              <div className="rounded-xl border border-[#1D1D1D] bg-black/30 p-3"><dt className="text-zinc-600">Tailles</dt><dd className="mt-1 break-words text-white">{selectedModerationProduct.sizes?.join(', ') || '—'}</dd></div>
+                              <div className="rounded-xl border border-[#1D1D1D] bg-black/30 p-3"><dt className="text-zinc-600">Couleurs</dt><dd className="mt-1 break-words text-white">{selectedModerationProduct.colors?.join(', ') || '—'}</dd></div>
+                            </dl>
+                            {selectedModerationProduct.description && <p className="mt-4 text-sm leading-6 text-zinc-400">{selectedModerationProduct.description}</p>}
+                          </div>
+                        </div>
+                      </section>
 
-                          {/* Dropdown Menu - Opens UPWARDS above the button */}
-                          <div className="absolute right-0 bottom-full mb-2 w-full sm:w-60 bg-[#101010] border border-[#D4AF37]/40 rounded-xl shadow-2xl py-1.5 z-[100] max-h-60 overflow-y-auto font-sans backdrop-blur-md">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedBoutiqueFilter('all');
-                                setIsBoutiqueFilterOpen(false);
-                              }}
-                              className={`w-full text-left px-4 py-2 text-xs flex items-center justify-between transition-colors ${
-                                selectedBoutiqueFilter === 'all'
-                                  ? 'bg-[#1A1A1A] text-[#D4AF37] font-semibold'
-                                  : 'text-zinc-300 hover:bg-zinc-900 hover:text-white'
-                              }`}
-                            >
-                              <span>Toutes les boutiques</span>
-                              {selectedBoutiqueFilter === 'all' && <span className="text-[#D4AF37] text-xs">✓</span>}
+                      <section className="rounded-2xl border border-[#D4AF37]/35 bg-[#0A0A08] p-4 sm:p-5">
+                        <div className="flex items-start gap-3">
+                          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D4AF37]/35 bg-[#D4AF37]/10 text-[#D4AF37]"><MessageSquare className="h-5 w-5" /></span>
+                          <div>
+                            <h3 className="serif-title text-lg text-white">Commentaire au gérant</h3>
+                            <p className="mt-1 text-xs leading-5 text-zinc-500">Le commentaire sera enregistré dans Firebase et visible dans la console de {selectedModerationBoutique.name}.</p>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-2" aria-label="Niveau du commentaire">
+                          {([['action_required', 'Correction demandée'], ['info', 'Information']] as const).map(([value, label]) => (
+                            <button key={value} type="button" onClick={() => setModerationSeverity(value)} aria-pressed={moderationSeverity === value} className={`min-h-11 rounded-xl border px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] ${moderationSeverity === value ? 'border-[#D4AF37] bg-[#D4AF37] font-semibold text-black' : 'border-[#292929] bg-[#0B0B0B] text-zinc-300 hover:border-[#D4AF37]/50'}`}>
+                              {label}
                             </button>
+                          ))}
+                        </div>
 
-                            {boutiques.map(b => (
-                              <button
-                                key={b.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedBoutiqueFilter(b.id);
-                                  setIsBoutiqueFilterOpen(false);
-                                }}
-                                className={`w-full text-left px-4 py-2 text-xs flex items-center justify-between transition-colors ${
-                                  selectedBoutiqueFilter === b.id
-                                    ? 'bg-[#1A1A1A] text-[#D4AF37] font-semibold'
-                                    : 'text-zinc-300 hover:bg-zinc-900 hover:text-white'
-                                }`}
-                              >
-                                <span className="truncate">{b.name}</span>
-                                {selectedBoutiqueFilter === b.id && <span className="text-[#D4AF37] text-xs">✓</span>}
-                              </button>
+                        <label htmlFor="moderation-comment" className="mt-4 block font-mono text-[10px] uppercase tracking-wider text-zinc-400">Votre observation</label>
+                        <textarea
+                          id="moderation-comment"
+                          value={moderationComment}
+                          onChange={event => {
+                            setModerationComment(event.target.value.slice(0, 1000));
+                            setModerationFeedback(null);
+                          }}
+                          rows={5}
+                          placeholder="Expliquez clairement ce qui doit être vérifié ou corrigé sur cet article..."
+                          className="mt-2 w-full resize-y rounded-xl border border-[#292929] bg-black/45 p-3 text-sm leading-6 text-white outline-none placeholder:text-zinc-600 focus:border-[#D4AF37] focus-visible:ring-2 focus-visible:ring-[#D4AF37]/20"
+                        />
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          <span className="font-mono text-[10px] text-zinc-600">{moderationComment.length}/1000</span>
+                          <button type="button" onClick={handleSubmitModerationNote} disabled={moderationSubmitting || moderationComment.trim().length < 3} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#D4AF37] px-5 font-mono text-[10px] font-bold uppercase tracking-wider text-black transition-colors hover:bg-[#E6C85A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:opacity-45">
+                            <Send className="h-4 w-4" /> {moderationSubmitting ? 'Envoi…' : 'Envoyer au gérant'}
+                          </button>
+                        </div>
+                        {moderationNotesError && <p role="alert" className="mt-3 rounded-xl border border-red-900/60 bg-red-950/30 p-3 text-xs text-red-300">{moderationNotesError}</p>}
+                        {moderationFeedback && <p role="status" className="mt-3 rounded-xl border border-emerald-800/60 bg-emerald-950/25 p-3 text-xs text-emerald-300">{moderationFeedback}</p>}
+                      </section>
+
+                      <section className="rounded-2xl border border-[#202020] bg-[#090909] p-4 sm:p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="serif-title text-lg text-white">Historique des observations</h3>
+                          <span className="rounded-full border border-[#2A2A2A] px-2.5 py-1 font-mono text-[10px] text-zinc-400">{moderationNotes.filter(note => note.productId === selectedModerationProduct.id).length}</span>
+                        </div>
+                        {moderationNotesLoading ? (
+                          <p className="mt-4 text-sm text-zinc-500">Chargement de l’historique…</p>
+                        ) : moderationNotes.filter(note => note.productId === selectedModerationProduct.id).length === 0 ? (
+                          <p className="mt-4 rounded-xl border border-dashed border-[#252525] p-5 text-center text-sm text-zinc-500">Aucun commentaire envoyé pour cet article.</p>
+                        ) : (
+                          <div className="mt-4 space-y-3">
+                            {moderationNotes.filter(note => note.productId === selectedModerationProduct.id).map(note => (
+                              <article key={note.id} className="rounded-xl border border-[#202020] bg-black/35 p-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className={`rounded-full border px-2 py-1 font-mono text-[9px] uppercase ${note.severity === 'action_required' ? 'border-amber-800/70 bg-amber-950/30 text-amber-300' : 'border-blue-800/70 bg-blue-950/30 text-blue-300'}`}>{note.severity === 'action_required' ? 'Correction demandée' : 'Information'}</span>
+                                  <span className={`font-mono text-[9px] uppercase ${note.status === 'resolved' ? 'text-emerald-400' : 'text-zinc-500'}`}>{note.status === 'resolved' ? 'Traitée' : 'En attente'}</span>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-300">{note.text}</p>
+                                <p className="mt-3 font-mono text-[9px] text-zinc-600">{new Date(note.createdAt).toLocaleString('fr-FR')} · {note.createdByName}</p>
+                              </article>
                             ))}
                           </div>
+                        )}
+                      </section>
+
+                      <button type="button" onClick={() => handleDeleteProduct(selectedModerationProduct.id)} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-900/60 bg-red-950/15 px-4 font-mono text-[10px] uppercase tracking-wider text-red-300 transition-colors hover:bg-red-950/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+                        <Trash2 className="h-4 w-4" /> Retirer définitivement cet article
+                      </button>
+                    </>
+                  ) : selectedModerationCollection ? (
+                    <>
+                      <button type="button" onClick={handleAdminBack} className="flex min-h-11 items-center gap-2 rounded-xl border border-[#252525] bg-[#0B0B0B] px-4 font-mono text-[10px] uppercase tracking-wider text-zinc-300 transition-colors hover:border-[#D4AF37]/60 hover:text-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]">
+                        <ArrowLeft className="h-4 w-4" /> Retour aux catalogues
+                      </button>
+
+                      <section className="rounded-2xl border border-[#D4AF37]/30 bg-[#0A0A08] p-4">
+                        <p className="font-mono text-[10px] uppercase tracking-wider text-[#D4AF37]">{selectedModerationBoutique.name}</p>
+                        <h2 className="serif-title mt-1 text-2xl text-white">{selectedModerationCollection}</h2>
+                        <p className="mt-2 text-sm text-zinc-500">{selectedCatalogueProducts.length} article{selectedCatalogueProducts.length > 1 ? 's' : ''} dans ce catalogue</p>
+                      </section>
+
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                        <input type="search" value={productSearch} onChange={event => { setProductSearch(event.target.value); setModerationVisibleLimit(12); }} placeholder="Rechercher un article ou une référence..." className="min-h-12 w-full rounded-xl border border-[#202020] bg-[#0B0B0B] py-3 pl-11 pr-4 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-[#D4AF37] focus-visible:ring-2 focus-visible:ring-[#D4AF37]/25" />
+                      </div>
+
+                      {searchedCatalogueProducts.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-[#282828] bg-[#090909] px-5 py-14 text-center">
+                          <ShoppingBag className="mx-auto h-8 w-8 text-zinc-700" />
+                          <p className="mt-3 text-sm text-zinc-400">Aucun article ne correspond à cette recherche.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            {visibleModerationProducts.map(product => {
+                              const openNoteCount = moderationNotes.filter(note => note.productId === product.id && note.status === 'open').length;
+                              return (
+                                <button key={product.id} type="button" onClick={() => openModerationProduct(product.id)} className="group overflow-hidden rounded-2xl border border-[#1C1C1C] bg-[#090909] text-left transition-all hover:border-[#D4AF37]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.99]">
+                                  <span className="relative block aspect-[3/4] overflow-hidden bg-[#111]">
+                                    <img src={product.images?.[0]?.url} alt={product.name} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.025]" />
+                                    {openNoteCount > 0 && <span className="absolute right-2 top-2 rounded-full border border-amber-500/50 bg-black/85 px-2 py-1 font-mono text-[9px] text-amber-300">{openNoteCount} remarque{openNoteCount > 1 ? 's' : ''}</span>}
+                                  </span>
+                                  <span className="block p-3">
+                                    <strong className="serif-title block truncate text-sm text-white">{product.name}</strong>
+                                    <span className="mt-1 flex items-center justify-between gap-2 font-mono text-[10px]">
+                                      <span className="text-[#D4AF37]">{product.price.toLocaleString('fr-FR')} DA</span>
+                                      <span className={product.isAvailable ? 'text-emerald-400' : 'text-red-400'}>{product.isAvailable ? 'En ligne' : 'Hors ligne'}</span>
+                                    </span>
+                                    <span className="mt-3 flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-[#292929] font-mono text-[9px] uppercase tracking-wider text-zinc-300 group-hover:border-[#D4AF37]/50 group-hover:text-[#D4AF37]">Examiner <ChevronRight className="h-3.5 w-3.5" /></span>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {visibleModerationProducts.length < searchedCatalogueProducts.length && (
+                            <button type="button" onClick={() => setModerationVisibleLimit(limit => limit + 12)} className="min-h-12 w-full rounded-xl border border-[#D4AF37]/40 bg-[#0A0A08] font-mono text-[10px] uppercase tracking-wider text-[#D4AF37] hover:border-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]">
+                              Afficher 12 articles supplémentaires
+                            </button>
+                          )}
                         </>
                       )}
-                    </div>
-                  </div>
-
-                  {/* Products Grid Rebuild (Strict 2 cards per row & RTL) */}
-                  {filteredProducts.length === 0 ? (
-                    <div className="p-16 text-center text-zinc-500 border border-dashed border-zinc-900 rounded-2xl">
-                      Aucun article trouvé.
-                    </div>
+                    </>
                   ) : (
-                    <div className="grid grid-cols-2 gap-4 sm:gap-6">
-                      {filteredProducts.map(p => (
-                        <div key={p.id} className="bg-[#090909] border border-[#141414] rounded-2xl overflow-hidden flex flex-col justify-between group hover:border-[#D4AF37]/20 transition-all duration-300 relative">
-                          
-                          {/* Image Container */}
-                          <div className="relative aspect-[3/4] overflow-hidden bg-zinc-900 shrink-0">
-                            <img 
-                              src={p.images?.[0]?.url || "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?q=80&w=600"} 
-                              alt={p.name} 
-                              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500" 
-                            />
-                            {/* Luxury Badge Top Left */}
-                            <span className="absolute top-2.5 left-2.5 px-2 py-0.5 bg-black/85 backdrop-blur-sm border border-[#D4AF37]/35 text-[#D4AF37] font-mono rounded text-[8px] tracking-wider uppercase">
-                              {p.boutiqueName}
-                            </span>
-                            {/* Trash Button Hover Layer */}
-                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <button
-                                onClick={() => handleDeleteProduct(p.id)}
-                                className="p-3 bg-red-950/95 hover:bg-red-900 border border-red-800 text-red-200 rounded-full shadow-2xl transition-all scale-95 group-hover:scale-100 hover:scale-105 cursor-pointer"
-                                title="Supprimer cet article définitivement"
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </div>
+                    <>
+                      <button type="button" onClick={handleAdminBack} className="flex min-h-11 items-center gap-2 rounded-xl border border-[#252525] bg-[#0B0B0B] px-4 font-mono text-[10px] uppercase tracking-wider text-zinc-300 transition-colors hover:border-[#D4AF37]/60 hover:text-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]">
+                        <ArrowLeft className="h-4 w-4" /> Retour aux boutiques
+                      </button>
 
-                          {/* Info section */}
-                          <div className="p-4 flex-grow flex flex-col justify-between gap-3">
-                            <div className="space-y-1">
-                              <p className="font-mono text-[9px] uppercase tracking-widest text-[#D4AF37] font-medium">catégorie : {p.category}</p>
-                              <h4 className="serif-title text-sm font-semibold text-white tracking-wide line-clamp-1 leading-snug">{p.name}</h4>
-                            </div>
-                            
-                            <div className="flex items-center justify-between border-t border-[#121212] pt-2.5">
-                              <span className="text-xs font-mono font-bold text-[#D4AF37]">{p.price} DA</span>
-                              <span className="text-[8px] font-mono text-zinc-500">ID: ...{p.id.substring(p.id.length - 8)}</span>
-                            </div>
-                          </div>
-
+                      <section className="flex items-center gap-4 rounded-2xl border border-[#D4AF37]/35 bg-[linear-gradient(145deg,#10100d_0%,#090909_72%)] p-4">
+                        <img src={selectedModerationBoutique.logo} alt={selectedModerationBoutique.name} className="h-16 w-16 shrink-0 rounded-2xl border border-[#D4AF37]/30 object-cover" />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#D4AF37]">Catalogues de la boutique</p>
+                          <h2 className="serif-title mt-1 truncate text-2xl text-white">{selectedModerationBoutique.name}</h2>
+                          <p className="mt-1 truncate text-xs text-zinc-500">{selectedModerationBoutique.location?.city || 'Ville non renseignée'}</p>
                         </div>
-                      ))}
-                    </div>
+                      </section>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl border border-[#202020] bg-[#090909] p-4"><p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">Articles</p><strong className="mt-2 block font-mono text-2xl text-white">{moderationBoutiqueProducts.length}</strong></div>
+                        <div className="rounded-2xl border border-[#202020] bg-[#090909] p-4"><p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">À traiter</p><strong className="mt-2 block font-mono text-2xl text-[#D4AF37]">{moderationNotes.filter(note => note.status === 'open').length}</strong></div>
+                      </div>
+
+                      {moderationNotesLoading && <p role="status" className="rounded-xl border border-[#202020] bg-[#090909] p-3 text-xs text-zinc-500">Synchronisation des observations…</p>}
+                      {moderationNotesError && <p role="alert" className="rounded-xl border border-red-900/60 bg-red-950/30 p-3 text-xs text-red-300">{moderationNotesError}</p>}
+
+                      {moderationCatalogues.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-[#282828] bg-[#090909] px-5 py-14 text-center">
+                          <FolderOpen className="mx-auto h-8 w-8 text-zinc-700" />
+                          <p className="mt-3 text-sm text-zinc-300">Cette boutique ne possède encore aucun article.</p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                          {moderationCatalogues.map(catalogue => (
+                            <button key={catalogue.name} type="button" onClick={() => openModerationCollection(catalogue.name)} className="group overflow-hidden rounded-2xl border border-[#1D1D1D] bg-[#090909] text-left transition-all hover:border-[#D4AF37]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.99]">
+                              <span className="relative block aspect-[16/10] overflow-hidden bg-[#111]">
+                                {catalogue.products[0]?.images?.[0]?.url ? <img src={catalogue.products[0].images[0].url} alt="" loading="lazy" className="h-full w-full object-cover opacity-80 transition-transform duration-500 group-hover:scale-[1.03]" /> : <FolderOpen className="absolute inset-0 m-auto h-8 w-8 text-zinc-700" />}
+                                <span className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent" />
+                                <span className="absolute bottom-2 left-2 rounded-full border border-white/15 bg-black/65 px-2 py-1 font-mono text-[9px] text-white">{catalogue.products.length} articles</span>
+                              </span>
+                              <span className="block p-3">
+                                <strong className="serif-title block min-h-10 text-sm leading-5 text-white line-clamp-2">{catalogue.name}</strong>
+                                <span className="mt-2 flex items-center justify-between font-mono text-[9px] uppercase tracking-wider text-[#D4AF37]">Voir les articles <ChevronRight className="h-4 w-4" /></span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
 
-              {/* TAB 4: USERS DIRECTORY REGISTRY (Le Registre de l'Élite) */}
+              {/* TAB 4: BOUTIQUE OPENING REQUESTS */}
               {activeTab === 'users' && (
                 <div className="space-y-4">
-                  {/* Search field */}
                   <div className="relative">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 w-4 h-4" />
                     <input
                       type="text"
                       value={userSearch}
                       onChange={e => setUserSearch(e.target.value)}
-                      placeholder="Rechercher un membre de StoreHub..."
+                      placeholder="Rechercher une demande boutique..."
                       className="w-full bg-[#0A0A0A] border border-[#141414] rounded-2xl pl-12 pr-4 py-3.5 text-xs text-white placeholder-zinc-500 outline-none focus:border-[#D4AF37] transition-all font-sans"
                     />
                   </div>
 
                   <div className="flex items-center justify-between px-1">
-                    <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">Dossiers complets des comptes</p>
+                    <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">Demandes d’ouverture boutique</p>
                     <span className={`text-[9px] font-mono font-bold ${pendingAccountCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
                       {pendingAccountCount} EN ATTENTE
                     </span>
                   </div>
 
-                  {/* Account review grid: never more than two cards per row. */}
-                  <div className="grid grid-cols-2 gap-3 sm:gap-6">
-                    {filteredUsers.map(u => {
-                      const accountStatus = u.role === UserRole.ADMIN ? 'approved' : (u.accountStatus || 'approved');
-                      const linkedBoutique = u.boutiqueId ? boutiques.find(b => b.id === u.boutiqueId) : undefined;
-                      const statusLabel = accountStatus === 'pending' ? 'À confirmer' : accountStatus === 'rejected' ? 'Refusé' : accountStatus === 'suspended' ? 'Suspendu' : 'Actif';
-                      return (
-                        <div key={u.uid} className={`p-3 sm:p-5 rounded-2xl bg-[#090909] border transition-all flex flex-col justify-between gap-4 min-w-0 ${accountStatus === 'pending' ? 'border-[#D4AF37]/45 shadow-[0_0_20px_rgba(212,175,55,0.06)]' : accountStatus === 'rejected' || accountStatus === 'suspended' ? 'border-red-900/35' : 'border-[#141414] hover:border-zinc-800'}`}>
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 min-w-0">
+                  {filteredUsers.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-[#232323] bg-[#0A0A0A] px-6 py-14 text-center">
+                      <ShieldCheck className="mx-auto h-9 w-9 text-[#D4AF37]" />
+                      <p className="mt-4 text-sm text-white">Aucune demande boutique en attente</p>
+                      <p className="mt-1 text-[10px] text-zinc-500">Les nouveaux dossiers apparaîtront automatiquement ici.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 sm:gap-5">
+                      {filteredUsers.map(user => {
+                        const linkedBoutique = boutiques.find(boutique => boutique.id === user.boutiqueId || boutique.ownerId === user.uid);
+                        if (!linkedBoutique) return null;
+                        return (
+                          <button
+                            key={user.uid}
+                            type="button"
+                            onClick={() => openBoutiqueDossier(linkedBoutique)}
+                            aria-label={`Ouvrir le dossier de ${linkedBoutique.name}`}
+                            className="flex min-w-0 items-center gap-3 rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-3 text-left hover:border-[#D4AF37]/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.98] transition-all sm:p-4"
+                          >
                             <img
-                              src={u.photoURL || "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80"}
-                              alt={u.displayName}
-                              className="w-11 h-11 rounded-full border border-zinc-800 object-cover shrink-0"
+                              src={linkedBoutique.logo || user.photoURL}
+                              alt={linkedBoutique.name}
+                              className="h-12 w-12 shrink-0 rounded-full border border-[#D4AF37]/30 bg-zinc-900 object-cover sm:h-14 sm:w-14"
                             />
-                            <div className="min-w-0">
-                              <h4 className="text-xs font-semibold text-white truncate">{u.displayName || "Membre StoreHub"}</h4>
-                              <p className="text-[9px] text-zinc-500 font-mono break-all mt-0.5">{u.email}</p>
-                            </div>
-                          </div>
-
-                          <dl className="space-y-1.5 text-[9px] font-mono border-t border-[#151515] pt-3">
-                            <div className="flex justify-between gap-2"><dt className="text-zinc-600">TYPE</dt><dd className="text-zinc-300 text-right">{u.role === UserRole.ADMIN ? 'Administrateur' : u.role === UserRole.BOUTIQUE ? 'Boutique' : 'Client'}</dd></div>
-                            <div className="flex justify-between gap-2"><dt className="text-zinc-600">VILLE</dt><dd className="text-zinc-300 text-right truncate">{u.city || linkedBoutique?.location?.city || 'Non renseignée'}</dd></div>
-                            {linkedBoutique && <div className="flex justify-between gap-2"><dt className="text-zinc-600">BOUTIQUE</dt><dd className="text-[#D4AF37] text-right truncate">{linkedBoutique.name}</dd></div>}
-                            <div className="flex justify-between gap-2"><dt className="text-zinc-600">DEMANDE</dt><dd className="text-zinc-300 text-right">{new Date(u.approvalSubmittedAt || u.createdAt).toLocaleDateString('fr-FR')}</dd></div>
-                            <div className="flex justify-between gap-2"><dt className="text-zinc-600">IDENTIFIANT</dt><dd className="text-zinc-500 text-right truncate">…{u.uid.slice(-8)}</dd></div>
-                          </dl>
-
-                          {u.approvalRejectionReason && (
-                            <p className="p-2.5 rounded-lg bg-red-950/20 border border-red-900/30 text-[9px] leading-relaxed text-red-300">Motif : {u.approvalRejectionReason}</p>
-                          )}
-
-                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#121212] pt-3">
-                            <span className={`px-2 py-1 rounded text-[8px] font-mono uppercase tracking-wider font-bold ${accountStatus === 'pending' ? 'bg-amber-950/40 text-amber-400 border border-amber-800/40 animate-pulse' : accountStatus === 'approved' ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/30' : 'bg-red-950/30 text-red-400 border border-red-900/30'}`}>{statusLabel}</span>
-                            {linkedBoutique?.verificationDocPath && (
-                              <button onClick={() => { setActiveTab('documents'); setPreviewDoc({ boutiqueId: linkedBoutique.id, boutiqueName: linkedBoutique.name, docName: linkedBoutique.verificationDocName || 'Document légal', docType: 'KBIS', status: linkedBoutique.isVerified ? 'verified' : linkedBoutique.verificationStatus === 'rejected' ? 'rejected' : linkedBoutique.isSuspended ? 'suspended' : 'pending' }); }} className="text-[8px] font-mono text-[#D4AF37] underline underline-offset-4">
-                                VOIR LE DOSSIER
-                              </button>
-                            )}
-                          </div>
-
-                          {u.role !== UserRole.ADMIN && accountStatus === 'pending' && (
-                            <div className="grid grid-cols-2 gap-2">
-                              <button disabled={approvalBusyUid === u.uid} onClick={() => handleAccountDecision(u, 'approved')} className="py-2 rounded-lg bg-[#D4AF37] disabled:opacity-50 text-black text-[8px] sm:text-[9px] font-mono font-bold uppercase tracking-wider flex items-center justify-center gap-1">
-                                <Check className="w-3 h-3" /> Confirmer
-                              </button>
-                              <button disabled={approvalBusyUid === u.uid} onClick={() => handleAccountDecision(u, 'rejected')} className="py-2 rounded-lg bg-red-950/30 disabled:opacity-50 border border-red-900/50 text-red-400 text-[8px] sm:text-[9px] font-mono font-bold uppercase tracking-wider flex items-center justify-center gap-1">
-                                <X className="w-3 h-3" /> Refuser
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                            <span className="min-w-0 truncate text-xs font-semibold text-white sm:text-sm">{linkedBoutique.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* TAB 5: KBIS DOCUMENT INSPECTION CHAMBER */}
-              {activeTab === 'documents' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    
-                    {/* Left: Documents Registre list */}
-                    <div className="lg:col-span-5 bg-[#0A0A0A] border border-[#141414] rounded-2xl p-5 space-y-4">
-                      <h3 className="font-mono text-xs uppercase tracking-wider font-semibold text-[#D4AF37] border-b border-[#141414] pb-4">
-                        Registre des pièces justificatives
-                      </h3>
-                      
-                      <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
-                        {boutiques.map(b => (
-                          <div 
-                            key={b.id}
-                            onClick={() => setPreviewDoc({
-                              boutiqueId: b.id,
-                              boutiqueName: b.name,
-                              docName: b.verificationDocName || 'KBIS_Registre_Commerce.pdf',
-                              docType: 'KBIS',
-                              status: b.isSuspended ? 'suspended' : b.isVerified ? 'verified' : b.verificationStatus === 'rejected' ? 'rejected' : 'pending'
-                            })}
-                            className={`p-4 border rounded-xl cursor-pointer transition-all flex items-center justify-between hover:scale-[1.01] ${
-                              previewDoc?.boutiqueName === b.name 
-                                ? 'border-[#D4AF37] bg-[#D4AF37]/5' 
-                                : 'border-[#141414] hover:border-zinc-800 bg-zinc-950/40'
-                            }`}
-                          >
-                            <div className="flex items-center gap-3.5">
-                              <div className="w-10 h-10 rounded-lg bg-zinc-900 flex items-center justify-center text-red-500 border border-zinc-800">
-                                <FileText className="w-5.5 h-5.5" />
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-white truncate">{b.name}</p>
-                                <p className="text-[9px] text-zinc-500 font-mono mt-0.5 truncate">{b.verificationDocName || 'KBIS_Enregistrement.pdf'}</p>
-                              </div>
-                            </div>
+              {/* TAB 5: FIREBASE ACTIVITY AND SECURITY DETAILS */}
+              {activeTab === 'audit' && (
+                <div className="space-y-5">
+                  <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5 sm:p-6">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D4AF37]/35 bg-[#D4AF37]/10 text-[#D4AF37]">
+                        <ShieldAlert className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <h2 className="text-base font-semibold text-white sm:text-lg">Journal d’Audit et Sécurité</h2>
+                        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500 sm:text-xs">
+                          Activités calculées à partir des comptes, boutiques et articles enregistrés dans Firebase.
+                        </p>
+                      </div>
+                    </div>
+                  </section>
 
-                            <span className={`px-2 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider font-bold shrink-0 ${
-                              b.isSuspended 
-                                ? 'bg-red-950/40 text-red-400 border border-red-900/30' 
-                                : b.isVerified 
-                                  ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/30' 
-                                  : 'bg-amber-950/30 text-amber-400 border border-amber-900/30 animate-pulse'
-                            }`}>
-                              {b.isSuspended ? 'Suspendue' : b.isVerified ? 'Certifié' : b.verificationStatus === 'rejected' ? 'Refusée' : 'À valider'}
-                            </span>
+                  <div className="grid grid-cols-2 gap-3 sm:gap-5">
+                    <div className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-4 text-center sm:p-5">
+                      <p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">Boutiques actives</p>
+                      <p className="mt-2 font-mono text-2xl font-bold text-white">{verifiedBoutiquesCount}</p>
+                    </div>
+                    <div className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-4 text-center sm:p-5">
+                      <p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">Demandes en attente</p>
+                      <p className="mt-2 font-mono text-2xl font-bold text-[#D4AF37]">{pendingAccountCount}</p>
+                    </div>
+                  </div>
+
+                  <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5 sm:p-6">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-xs font-semibold text-white">Activité récente</h3>
+                      <span className="font-mono text-[9px] text-zinc-500">{recentActivities.length} événements</span>
+                    </div>
+
+                    {recentActivities.length === 0 ? (
+                      <div className="mt-5 rounded-xl border border-dashed border-[#252525] px-5 py-10 text-center text-[10px] text-zinc-500">
+                        Aucune activité enregistrée pour le moment.
+                      </div>
+                    ) : (
+                      <div className="mt-5 space-y-3">
+                        {recentActivities.map(activity => (
+                          <div key={activity.id} className="flex items-start gap-3 rounded-xl border border-[#181818] bg-[#080808] p-3.5">
+                            <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                              activity.status === 'success'
+                                ? 'bg-emerald-500'
+                                : activity.status === 'warning'
+                                  ? 'bg-amber-500'
+                                  : 'bg-blue-500'
+                            }`} />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs leading-relaxed text-zinc-200">{activity.text}</p>
+                              <p className="mt-1 font-mono text-[9px] text-zinc-600">{activity.time}</p>
+                            </div>
                           </div>
                         ))}
                       </div>
-                    </div>
+                    )}
+                  </section>
+                </div>
+              )}
 
-                    {/* Right: Modern Holographic Document Viewer details */}
-                    <div className="lg:col-span-7 bg-[#0A0A0A] border border-[#141414] rounded-2xl p-6 flex flex-col justify-between">
-                      {previewDoc ? (
-                        <div className="space-y-6 flex-grow flex flex-col justify-between">
-                          <div className="space-y-4">
-                            <div className="flex justify-between items-start border-b border-[#141414] pb-4">
-                              <div>
-                                <p className="font-mono text-[8px] uppercase tracking-wider text-zinc-500">Boutique émettrice</p>
-                                <h3 className="serif-title text-xl text-white font-medium tracking-wide mt-0.5">{previewDoc.boutiqueName}</h3>
-                              </div>
-                              <span className={`px-2.5 py-1 rounded text-[9px] font-mono uppercase tracking-widest font-bold ${
-                                previewDoc.status === 'verified' 
-                                  ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/40' 
-                                  : previewDoc.status === 'suspended' || previewDoc.status === 'rejected'
-                                    ? 'bg-red-950/40 text-red-400 border border-red-900/40'
-                                    : 'bg-amber-950/40 text-amber-400 border border-amber-900/40 animate-pulse'
-                              }`}>
-                                {previewDoc.status === 'verified' ? 'Certifié' : previewDoc.status === 'suspended' ? 'Suspendu' : previewDoc.status === 'rejected' ? 'Refusé' : 'Validation requise'}
-                              </span>
-                            </div>
+              {/* TAB 6: COMPLETE BOUTIQUE APPLICATION */}
+              {activeTab === 'documents' && (
+                <div className="space-y-5">
+                  {previewDoc && selectedApplicationBoutique ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { setPreviewDoc(null); setActiveTab('users'); }}
+                        className="inline-flex items-center gap-2 rounded-lg border border-[#252525] bg-[#0A0A0A] px-3 py-2 text-[10px] font-mono uppercase tracking-wider text-zinc-300 hover:border-[#D4AF37]/55 hover:text-[#D4AF37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.98] transition-all"
+                      >
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        Retour aux demandes
+                      </button>
 
-                            {/* Automated Document Reader mock layout */}
-                            <div className="bg-[#0D0D0D] border border-[#161616] rounded-2xl p-8 text-center space-y-4 relative overflow-hidden group min-h-[240px] flex flex-col items-center justify-center shadow-inner">
-                              
-                              <div className="w-16 h-20 bg-red-950/15 rounded-lg flex flex-col items-center justify-center text-red-400 border border-red-900/40 shadow-md">
-                                <FileText className="w-8 h-8" />
-                                <span className="font-mono text-[8px] font-bold mt-1.5 uppercase">PDF</span>
-                              </div>
-                              
-                              <div className="space-y-1">
-                                <p className="text-xs font-semibold text-white font-mono">{previewDoc.docName}</p>
-                                <p className="text-[10px] text-zinc-500 font-mono">Justificatif Légitime d'Immatriculation au RCS · 1.4 Mo</p>
-                              </div>
-
-                              <div className="p-4 bg-zinc-950 border border-zinc-900 rounded-xl max-w-md text-left">
-                                <div className="flex gap-2.5">
-                                  <ShieldCheck className="w-4 h-4 text-[#D4AF37] shrink-0 mt-0.5" />
-                                  <div className="space-y-1">
-                                    <p className="text-[10px] font-mono font-bold text-zinc-300">CONTRÔLE INTÈGRE STOREHUB SECURE</p>
-                                    <p className="text-[10px] text-zinc-400 font-light leading-relaxed">
-                                      Le document fourni atteste de l'existence juridique et commerciale réelle de la boutique partenaire. Veuillez vérifier la conformité avec la raison sociale.
-                                    </p>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Action Buttons styled like elite dashboard triggers */}
-                          <div className="pt-6 border-t border-[#141414] flex gap-3 justify-end flex-wrap">
-                            {previewDoc.status !== 'verified' && (
-                              <button
-                                onClick={() => handleUpdateBoutique(previewDoc.boutiqueId, { isVerified: true, isSuspended: false })}
-                                className="px-5 py-2.5 bg-[#D4AF37] hover:bg-white text-black rounded-lg text-xs font-mono font-bold tracking-widest uppercase transition-all duration-300 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#D4AF37]/10"
-                              >
-                                <Check className="w-4 h-4 stroke-[3]" />
-                                <span>Approuver & Certifier</span>
-                              </button>
-                            )}
-
-                            {previewDoc.status === 'verified' && (
-                              <button
-                                onClick={() => handleUpdateBoutique(previewDoc.boutiqueId, { isVerified: false })}
-                                className="px-5 py-2.5 bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 rounded-lg text-xs font-mono font-semibold tracking-widest uppercase transition-all duration-300 flex items-center gap-1.5 text-zinc-300 cursor-pointer"
-                              >
-                                <RotateCcw className="w-4 h-4" />
-                                <span>Révoquer la certification</span>
-                              </button>
-                            )}
-
-                            {previewDoc.status !== 'suspended' && (
-                              <button
-                                onClick={() => handleUpdateBoutique(previewDoc.boutiqueId, { isSuspended: true, isVerified: false })}
-                                className="px-5 py-2.5 bg-red-950/30 hover:bg-red-950/60 border border-red-900 text-red-400 rounded-lg text-xs font-mono font-semibold tracking-widest uppercase transition-all duration-300 flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Lock className="w-4 h-4" />
-                                <span>Suspendre Boutique</span>
-                              </button>
-                            )}
+                      <section className="overflow-hidden rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A]">
+                        <div className="relative h-32 bg-[#111111] sm:h-44">
+                          <img src={selectedApplicationBoutique.coverImage} alt={`Couverture de ${selectedApplicationBoutique.name}`} className="h-full w-full object-cover opacity-55" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A] via-transparent to-black/20" />
+                        </div>
+                        <div className="flex items-end gap-4 px-4 pb-5 sm:px-6">
+                          <img src={selectedApplicationBoutique.logo} alt={selectedApplicationBoutique.name} className="-mt-8 h-20 w-20 shrink-0 rounded-full border-2 border-[#D4AF37] bg-zinc-900 object-cover sm:h-24 sm:w-24" />
+                          <div className="min-w-0 pb-1">
+                            <h2 className="truncate text-xl font-semibold text-white sm:text-2xl">{selectedApplicationBoutique.name}</h2>
+                            <p className="mt-1 truncate text-[10px] font-mono text-zinc-500">{selectedApplicationBoutique.slug}</p>
                           </div>
                         </div>
-                      ) : (
-                        <div className="flex-grow flex flex-col items-center justify-center text-center space-y-4 py-24">
-                          <FileText className="w-14 h-14 text-zinc-700 stroke-[1]" />
-                          <div>
-                            <h4 className="serif-title text-base text-zinc-300 font-light">Inspecteur de Documents Inactif</h4>
-                            <p className="text-xs text-zinc-500 font-light mt-1.5 max-w-sm mx-auto leading-relaxed">
-                              Sélectionnez une boutique de créateur dans le registre latéral gauche pour charger et valider ses pièces justificatives officielles de commerce.
-                            </p>
+                      </section>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                          <h3 className="text-xs font-semibold text-[#D4AF37]">Responsable du compte</h3>
+                          <dl className="mt-4 space-y-3 text-xs">
+                            <div><dt className="text-zinc-500">Nom</dt><dd className="mt-1 break-words text-white">{selectedApplicationOwner?.displayName || 'Non renseigné'}</dd></div>
+                            <div><dt className="text-zinc-500">Adresse email</dt><dd className="mt-1 break-all text-white">{selectedApplicationOwner?.email || 'Non renseignée'}</dd></div>
+                            <div><dt className="text-zinc-500">Identifiant</dt><dd className="mt-1 break-all font-mono text-zinc-300">{selectedApplicationBoutique.ownerId}</dd></div>
+                          </dl>
+                        </section>
+
+                        <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                          <h3 className="text-xs font-semibold text-[#D4AF37]">Informations de la boutique</h3>
+                          <dl className="mt-4 space-y-3 text-xs">
+                            <div><dt className="text-zinc-500">Localisation</dt><dd className="mt-1 text-white">{[selectedApplicationBoutique.location?.city, selectedApplicationBoutique.location?.country].filter(Boolean).join(', ') || 'Non renseignée'}</dd></div>
+                            <div><dt className="text-zinc-500">Description</dt><dd className="mt-1 leading-relaxed text-white">{selectedApplicationBoutique.description || 'Non renseignée'}</dd></div>
+                            <div><dt className="text-zinc-500">Demande envoyée</dt><dd className="mt-1 text-white">{new Date(selectedApplicationOwner?.approvalSubmittedAt || selectedApplicationBoutique.verificationSubmittedAt || selectedApplicationBoutique.createdAt).toLocaleString('fr-FR')}</dd></div>
+                          </dl>
+                        </section>
+
+                        <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                          <h3 className="text-xs font-semibold text-[#D4AF37]">Catalogue et présence en ligne</h3>
+                          <dl className="mt-4 space-y-3 text-xs">
+                            <div><dt className="text-zinc-500">Catégories</dt><dd className="mt-1 text-white">{selectedApplicationBoutique.categories?.join(', ') || 'Non renseignées'}</dd></div>
+                            <div><dt className="text-zinc-500">Mots-clés</dt><dd className="mt-1 text-white">{selectedApplicationBoutique.tags?.join(', ') || 'Non renseignés'}</dd></div>
+                            <div><dt className="text-zinc-500">Instagram</dt><dd className="mt-1 break-all text-white">{selectedApplicationBoutique.social?.instagram || 'Non renseigné'}</dd></div>
+                            <div><dt className="text-zinc-500">TikTok</dt><dd className="mt-1 break-all text-white">{selectedApplicationBoutique.social?.tiktok || 'Non renseigné'}</dd></div>
+                            <div><dt className="text-zinc-500">Facebook</dt><dd className="mt-1 break-all text-white">{selectedApplicationBoutique.social?.facebook || 'Non renseigné'}</dd></div>
+                            <div><dt className="text-zinc-500">Site web</dt><dd className="mt-1 break-all text-white">{selectedApplicationBoutique.social?.website || 'Non renseigné'}</dd></div>
+                          </dl>
+                        </section>
+
+                        <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <h3 className="text-xs font-semibold text-[#D4AF37]">Document transmis</h3>
+                            <FileText className="h-4 w-4 text-zinc-500" />
                           </div>
+                          <p className="mt-3 break-all text-xs text-white">{selectedApplicationBoutique.verificationDocName || 'Aucun document enregistré'}</p>
+                          <div className="mt-4 min-h-40 overflow-hidden rounded-xl border border-[#202020] bg-[#070707]">
+                            {documentLoading ? (
+                              <div className="flex min-h-40 animate-pulse items-center justify-center text-[10px] font-mono text-zinc-500">Chargement sécurisé...</div>
+                            ) : documentError ? (
+                              <div className="flex min-h-40 items-center justify-center px-5 text-center text-[10px] text-red-400">{documentError}</div>
+                            ) : secureDocumentUrl ? (
+                              /\.(png|jpe?g|webp)$/i.test(selectedApplicationBoutique.verificationDocName || '') ? (
+                                <img src={secureDocumentUrl} alt="Document de vérification de la boutique" className="max-h-80 w-full object-contain" />
+                              ) : (
+                                <iframe src={secureDocumentUrl} title="Document de vérification de la boutique" className="h-72 w-full bg-white" />
+                              )
+                            ) : (
+                              <div className="flex min-h-40 items-center justify-center px-5 text-center text-[10px] text-zinc-500">Aucun fichier sécurisé disponible.</div>
+                            )}
+                          </div>
+                          {secureDocumentUrl && (
+                            <a href={secureDocumentUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-[#D4AF37] hover:text-white">
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Ouvrir le document
+                            </a>
+                          )}
+                        </section>
+                      </div>
+
+                      {selectedApplicationOwner?.accountStatus === 'pending' && (
+                        <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[#252525] bg-[#0A0A0A] p-4 sm:ml-auto sm:max-w-md">
+                          <button
+                            type="button"
+                            disabled={approvalBusyUid === selectedApplicationOwner.uid}
+                            onClick={() => handleAccountDecision(selectedApplicationOwner, 'approved')}
+                            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 text-[10px] font-mono font-bold uppercase tracking-wider text-black hover:bg-[#E4C85A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50 active:scale-[0.98] transition-all"
+                          >
+                            <Check className="h-4 w-4" />
+                            Accepter
+                          </button>
+                          <button
+                            type="button"
+                            disabled={approvalBusyUid === selectedApplicationOwner.uid}
+                            onClick={() => handleAccountDecision(selectedApplicationOwner, 'rejected')}
+                            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-800 bg-red-950/35 px-4 text-[10px] font-mono font-bold uppercase tracking-wider text-red-300 hover:bg-red-950/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50 active:scale-[0.98] transition-all"
+                          >
+                            <X className="h-4 w-4" />
+                            Refuser
+                          </button>
                         </div>
                       )}
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                      <h2 className="text-base font-semibold text-white">Choisissez une demande boutique</h2>
+                      <div className="mt-5 grid grid-cols-2 gap-3 sm:gap-5">
+                        {pendingAccounts.map(account => {
+                          const boutique = boutiques.find(item => item.id === account.boutiqueId || item.ownerId === account.uid);
+                          if (!boutique) return null;
+                          return (
+                            <button key={account.uid} onClick={() => openBoutiqueDossier(boutique)} className="flex min-w-0 items-center gap-3 rounded-2xl border border-[#1D1D1D] bg-[#080808] p-3 text-left hover:border-[#D4AF37]/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.98] transition-all">
+                              <img src={boutique.logo || account.photoURL} alt={boutique.name} className="h-12 w-12 shrink-0 rounded-full border border-[#D4AF37]/30 object-cover" />
+                              <span className="min-w-0 truncate text-xs font-semibold text-white">{boutique.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-
-                  </div>
+                  )}
                 </div>
               )}
 
@@ -1379,16 +1641,24 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
               setTempAdminRole(adminRole);
               setShowAvatarModal(true); 
             }}
-            className="relative shrink-0 group focus:outline-none cursor-pointer"
-            title="Changer le profil"
+            className="relative isolate shrink-0 group focus:outline-none cursor-pointer"
+            title="Administrateur principal — changer le profil"
           >
+            <span
+              aria-hidden="true"
+              className="absolute -inset-0.5 rounded-full bg-[conic-gradient(from_0deg,#4285F4_0_25%,#EA4335_25%_50%,#FBBC05_50%_75%,#34A853_75%_100%)] opacity-95 shadow-[0_0_7px_rgba(66,133,244,0.32)] animate-[spin_7s_linear_infinite] motion-reduce:animate-none"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute -inset-1 rounded-full bg-[conic-gradient(from_90deg,#4285F4,#EA4335,#FBBC05,#34A853,#4285F4)] opacity-20 blur-sm animate-pulse motion-reduce:animate-none"
+            />
             <img 
               src={adminAvatar} 
               alt="Admin avatar" 
-              className="w-10 h-10 rounded-full object-cover border border-[#D4AF37]/50 shadow-inner group-hover:border-[#D4AF37] transition-all duration-300" 
+              className="relative z-10 w-10 h-10 rounded-full object-cover border-2 border-[#090909] shadow-inner transition-all duration-300"
             />
-            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-[#0A0A0A]" />
-            <div className="absolute inset-0 bg-black/40 rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity duration-200">
+            <span className="absolute bottom-0 right-0 z-20 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-[#0A0A0A]" />
+            <div className="absolute inset-0 z-20 bg-black/40 rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity duration-200">
               <Sparkles className="w-4 h-4 text-[#D4AF37] animate-pulse" />
             </div>
           </button>

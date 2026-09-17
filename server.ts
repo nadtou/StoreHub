@@ -3,6 +3,7 @@ import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
+import { randomUUID } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { 
@@ -37,8 +38,11 @@ import {
   getAllBoutiqueApplicationsAuthenticated,
   updateBoutiqueVerificationAuthenticated,
   updateAccountApprovalAuthenticated,
+  getModerationNotesForBoutiqueAuthenticated,
+  saveModerationNoteAuthenticated,
+  updateModerationNoteStatusAuthenticated,
 } from "./src/server/db";
-import { AccountApprovalStatus, Boutique, BoutiqueApplication, ManualOrder, UserProfile, UserRole } from "./src/types";
+import { AccountApprovalStatus, Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteSeverity, UserProfile, UserRole } from "./src/types";
 import {
   ALL_SHOE_SIZES,
   ensureRequiredClothingSizes,
@@ -616,9 +620,9 @@ app.post("/api/users/profile", async (req, res) => {
       favoriteProductIds: Array.isArray(body.favoriteProductIds)
         ? cleanStringList(body.favoriteProductIds, 500)
         : existingProfile?.favoriteProductIds || [],
-      accountStatus: existingProfile ? existingProfile.accountStatus : "pending",
+      accountStatus: existingProfile ? existingProfile.accountStatus : "approved",
       approvalSubmittedAt: existingProfile ? existingProfile.approvalSubmittedAt : new Date().toISOString(),
-      approvalReviewedAt: existingProfile?.approvalReviewedAt,
+      approvalReviewedAt: existingProfile ? existingProfile.approvalReviewedAt : new Date().toISOString(),
       approvalRejectionReason: existingProfile?.approvalRejectionReason,
       createdAt: existingProfile?.createdAt || new Date().toISOString(),
     };
@@ -927,6 +931,113 @@ app.get("/api/admin/boutiques", async (req, res) => {
   }
 });
 
+// Admin API: all products, including items belonging to suspended or pending boutiques.
+app.get("/api/admin/products", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    res.json(await getProducts());
+  } catch (error: any) {
+    console.error("Error fetching products for admin:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de charger le catalogue administratif." });
+  }
+});
+
+// Admin API: private moderation observations for one boutique.
+app.get("/api/admin/moderation-notes", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    const boutiqueId = typeof req.query.boutiqueId === "string" ? req.query.boutiqueId.trim() : "";
+    if (!boutiqueId || boutiqueId.length > 160) {
+      return res.status(400).json({ error: "Une boutique valide est requise." });
+    }
+    res.json(await getModerationNotesForBoutiqueAuthenticated(boutiqueId, idToken));
+  } catch (error: any) {
+    console.error("Error fetching moderation notes for admin:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de charger les observations de modération." });
+  }
+});
+
+// Admin API: send a product-specific observation to the boutique owner.
+app.post("/api/admin/moderation-notes", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    const account = await getFirebaseAccountFromIdToken(idToken);
+    const productId = typeof req.body?.productId === "string" ? req.body.productId.trim() : "";
+    const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+    const severity: ModerationNoteSeverity = req.body?.severity === "info" ? "info" : "action_required";
+    if (!productId || productId.length > 180 || text.length < 3 || text.length > 1000) {
+      return res.status(400).json({ error: "Le commentaire doit contenir entre 3 et 1000 caractères." });
+    }
+
+    const product = await getProductById(productId);
+    if (!product) return res.status(404).json({ error: "Article introuvable." });
+    const boutique = await getBoutiqueById(product.boutiqueId);
+    if (!boutique) return res.status(409).json({ error: "La boutique liée à cet article est introuvable." });
+
+    const timestamp = new Date().toISOString();
+    const note: ModerationNote = {
+      id: `moderation_${Date.now()}_${randomUUID()}`,
+      boutiqueId: boutique.id,
+      boutiqueOwnerId: boutique.ownerId,
+      boutiqueName: boutique.name,
+      productId: product.id,
+      productName: product.name,
+      productImage: product.images?.[0]?.url || "",
+      text,
+      severity,
+      status: "open",
+      createdByUid: account.uid,
+      createdByName: account.displayName || account.email || "Administration StoreHub",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await saveModerationNoteAuthenticated(note, idToken);
+    res.status(201).json(note);
+  } catch (error: any) {
+    console.error("Error creating moderation note:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible d’envoyer le commentaire au gérant." });
+  }
+});
+
+// Boutique API: the owner can read observations addressed to their boutique.
+app.get("/api/boutiques/:id/moderation-notes", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    const boutiqueId = req.params.id.trim();
+    await assertBoutiqueOwner(boutiqueId, idToken);
+    res.json(await getModerationNotesForBoutiqueAuthenticated(boutiqueId, idToken));
+  } catch (error: any) {
+    console.error("Error fetching boutique moderation notes:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de charger les observations administratives." });
+  }
+});
+
+// Boutique API: the owner can acknowledge that an observation was handled.
+app.put("/api/boutiques/:id/moderation-notes/:noteId/status", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    const boutiqueId = req.params.id.trim();
+    const noteId = req.params.noteId.trim();
+    await assertBoutiqueOwner(boutiqueId, idToken);
+    if (req.body?.status !== "resolved") {
+      return res.status(400).json({ error: "Le statut demandé est invalide." });
+    }
+    const note = await updateModerationNoteStatusAuthenticated(noteId, boutiqueId, "resolved", idToken);
+    res.json(note);
+  } catch (error: any) {
+    console.error("Error updating moderation note status:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de mettre à jour cette observation." });
+  }
+});
+
 // Admin API: UPDATE boutique details (verification, feature, suspend)
 app.put("/api/admin/boutiques/:id", async (req, res) => {
   try {
@@ -946,6 +1057,14 @@ app.put("/api/admin/boutiques/:id", async (req, res) => {
       updates.verificationReviewedAt = new Date().toISOString();
       applicationUpdates.status = "suspended";
       applicationUpdates.reviewedAt = updates.verificationReviewedAt;
+    } else if (body.isSuspended === false && currentBoutique.isSuspended) {
+      updates.isSuspended = false;
+      updates.verificationStatus = currentBoutique.isVerified ? "verified" : "pending";
+      updates.verificationReviewedAt = new Date().toISOString();
+      updates.verificationRejectionReason = "";
+      applicationUpdates.status = currentBoutique.isVerified ? "verified" : "pending";
+      applicationUpdates.reviewedAt = updates.verificationReviewedAt;
+      applicationUpdates.rejectionReason = "";
     } else if (body.isVerified === true) {
       updates.isVerified = true;
       updates.isSuspended = false;
@@ -986,7 +1105,10 @@ app.put("/api/admin/boutiques/:id", async (req, res) => {
             ? { accountStatus: "pending" as const, approvalReviewedAt: undefined, approvalRejectionReason: "" }
             : undefined;
     await updateBoutiqueVerificationAuthenticated(id, updates, applicationUpdates, idToken, ownerUpdates);
-    res.json({ message: "Boutique updated successfully", id, updates });
+    res.json({
+      message: "Boutique updated successfully",
+      boutique: { ...currentBoutique, ...updates, id },
+    });
   } catch (error: any) {
     console.error("Error updating boutique:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to update boutique" });
@@ -1106,9 +1228,7 @@ async function assertAdmin(idToken: string): Promise<void> {
 }
 
 function normalizedAccountStatus(profile: UserProfile): AccountApprovalStatus {
-  // Existing accounts created before this workflow remain active. Every new
-  // registration receives an explicit `pending` status server-side.
-  return profile.accountStatus || "approved";
+  return profile.accountStatus || (profile.role === UserRole.ADMIN ? "approved" : "pending");
 }
 
 async function assertApprovedAccount(

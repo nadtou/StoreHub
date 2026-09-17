@@ -216,7 +216,7 @@ export default function Login({ onLogin }: LoginProps) {
   };
 
   const getAccountBlockingMessage = (profile: UserProfile): string | null => {
-    const status: AccountApprovalStatus = profile.accountStatus || 'approved';
+    const status: AccountApprovalStatus = profile.accountStatus || (profile.role === UserRole.ADMIN ? 'approved' : 'pending');
     if (status === 'pending') return "Votre compte est en attente de confirmation par l’administration.";
     if (status === 'rejected') {
       return `Votre demande d’ouverture a été refusée${profile.approvalRejectionReason ? ` : ${profile.approvalRejectionReason}` : '.'}`;
@@ -462,7 +462,13 @@ export default function Login({ onLogin }: LoginProps) {
       const profileResponse = await firebaseAuthenticatedFetch('/api/users/profile');
       const profile = await profileResponse.json().catch(() => null);
 
-      if (!profileResponse.ok || profile?.role !== UserRole.ADMIN) {
+      if (!profileResponse.ok) {
+        await signOut(auth);
+        setAuthError(profile?.error || "Le profil administrateur n’a pas pu être vérifié. Réessayez dans quelques instants.");
+        return;
+      }
+
+      if (profile?.role !== UserRole.ADMIN) {
         await signOut(auth);
         setAuthError("Ce compte ne possède pas les autorisations administrateur.");
         return;
@@ -506,7 +512,9 @@ export default function Login({ onLogin }: LoginProps) {
       const { auth } = await initFirebase();
       const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, regClientPassword);
       createdUser = credential.user;
-      await sendEmailVerification(credential.user);
+      void sendEmailVerification(credential.user).catch(error => {
+        console.warn("L’email de vérification n’a pas pu être envoyé, mais le compte client reste actif.", error);
+      });
 
       const newProfile = {
         uid: credential.user.uid,
@@ -538,14 +546,14 @@ export default function Login({ onLogin }: LoginProps) {
         throw new Error(profilePayload?.error || "Le profil client n’a pas pu être enregistré.");
       }
 
-      await signOut(auth);
       createdUser = null;
-      setClientEmail(normalizedEmail);
-      setClientPassword('');
       setRegClientPassword('');
       setRegClientConfirmPassword('');
-      setView('client_login');
-      setAuthNotice("Votre demande de compte client a été envoyée. Vérifiez votre email : l’accès sera ouvert uniquement après l’approbation de l’administrateur.");
+      await onLogin(UserRole.CLIENT, normalizedEmail, {
+        displayName: normalizedName,
+        photoURL: newProfile.photoURL,
+        uid: credential.user.uid,
+      });
     } catch (err: any) {
       if (createdUser) await deleteUser(createdUser).catch(() => undefined);
       setAuthError(translateAuthError(err));
@@ -605,8 +613,7 @@ export default function Login({ onLogin }: LoginProps) {
       const payload = await profileResponse.json().catch(() => null);
       throw new Error(payload?.error || "Le profil Google n’a pas pu être enregistré.");
     }
-    await signOut(auth);
-    setAuthNotice("Votre demande de compte client a été envoyée à l’administrateur. Vous pourrez vous connecter après son approbation.");
+    await onLogin(UserRole.CLIENT, email, { displayName, photoURL, uid: firebaseUser.uid });
   };
 
   const showGoogleAuthError = (error: any) => {
