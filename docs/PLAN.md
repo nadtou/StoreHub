@@ -29,7 +29,7 @@ Une version web reproductible dont la compilation, la santé serveur, les dépen
 
 - [x] TypeScript passe sans erreur.
 - [x] La construction de production aboutit.
-- [ ] Les quatre alertes de sécurité élevées sont corrigées sans régression.
+- [x] Les quatre alertes de sécurité élevées sont corrigées sans régression.
 - [ ] Une commande unique exécute contrôle de types, tests et construction.
 - [ ] Les secrets et fichiers locaux sont exclus du dépôt.
 
