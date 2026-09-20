@@ -1,6 +1,7 @@
 import { Product } from '../types';
 import { Heart, Share2, Compass, ArrowRight, Trash2, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface FavoritesProps {
   favorites: string[];
@@ -16,7 +17,7 @@ export default function Favorites({ favorites, toggleFavorite, onProductClick }:
   useEffect(() => {
     const fetchLiveProducts = async () => {
       try {
-        const res = await fetch('/api/products');
+        const res = await firebaseAppCheckFetch('/api/products');
         if (res.ok) {
           const liveProducts = await res.json();
           setProducts(Array.isArray(liveProducts) ? liveProducts : []);

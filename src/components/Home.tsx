@@ -3,6 +3,7 @@ import { Boutique, Product, UserPreferences } from '../types';
 import { Sparkles, ArrowRight, ArrowLeft, Star, Heart, Flame, ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react';
 import FennecMascot from './FennecMascot';
 import { productMatchesGenre } from './bb_template';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface HomeProps {
   preferences: UserPreferences | null;
@@ -39,8 +40,8 @@ export default function Home({
     const fetchLiveData = async () => {
       try {
         const [resB, resP] = await Promise.all([
-          fetch('/api/boutiques'),
-          fetch('/api/products')
+          firebaseAppCheckFetch('/api/boutiques'),
+          firebaseAppCheckFetch('/api/products')
         ]);
         if (resB.ok) {
           const liveBoutiques = await resB.json();

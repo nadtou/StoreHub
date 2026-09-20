@@ -11,12 +11,14 @@ import {
   ChevronRight,
   ChevronUp,
   Eye,
+  ImagePlus,
   Layers,
   Package,
   Plus,
   Search,
   ShoppingBag,
   SlidersHorizontal,
+  Store,
   Trash2,
   TrendingUp,
   Users,
@@ -24,7 +26,7 @@ import {
 } from 'lucide-react';
 import FennecMascot from './FennecMascot';
 import FenncoAICenter from './FenncoAICenter';
-import { firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch';
+import { firebaseAppCheckFetch, firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface DashboardProps {
   boutiqueId: string;
@@ -32,13 +34,23 @@ interface DashboardProps {
   onEditProductClick: (product: Product) => void;
   onProductClick: (product: Product) => void;
   onOrdersClick: () => void;
+  onOpenStorefront: () => void;
+  onOpenSettings: () => void;
   onOpenQA?: () => void;
 }
 
 type StatusFilter = 'all' | 'active' | 'out_of_stock';
 const CATALOG_PAGE_SIZE = 6;
 
-export default function Dashboard({ boutiqueId, onAddProductClick, onEditProductClick, onProductClick, onOrdersClick }: DashboardProps) {
+export default function Dashboard({
+  boutiqueId,
+  onAddProductClick,
+  onEditProductClick,
+  onProductClick,
+  onOrdersClick,
+  onOpenStorefront,
+  onOpenSettings,
+}: DashboardProps) {
   const [activeBoutique, setActiveBoutique] = useState<Boutique | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<ManualOrder[]>([]);
@@ -58,10 +70,10 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
     const fetchLiveData = async () => {
       try {
         const [boutiquesResponse, productsResponse, ordersResponse, visibilityResponse] = await Promise.all([
-          fetch('/api/boutiques'),
-          fetch('/api/products'),
+          firebaseAppCheckFetch('/api/boutiques'),
+          firebaseAppCheckFetch('/api/products'),
           firebaseAuthenticatedFetch(`/api/orders?boutiqueId=${encodeURIComponent(boutiqueId)}`),
-          fetch(`/api/analytics/boutiques/${encodeURIComponent(boutiqueId)}/visibility?days=30`),
+          firebaseAppCheckFetch(`/api/analytics/boutiques/${encodeURIComponent(boutiqueId)}/visibility?days=30`),
         ]);
 
         if (boutiquesResponse.ok) {
@@ -136,9 +148,10 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isAvailable, updatedAt: new Date().toISOString() })
       });
-      if (!response.ok) throw new Error('Availability could not be saved');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.product) throw new Error(payload?.error || 'Availability could not be saved');
       setProducts((currentProducts) => currentProducts.map((item) => (
-        item.id === productId ? { ...item, isAvailable } : item
+        item.id === productId ? payload.product as Product : item
       )));
     } catch (error) {
       console.error('Error saving product availability:', error);
@@ -383,6 +396,39 @@ export default function Dashboard({ boutiqueId, onAddProductClick, onEditProduct
         boutique={activeBoutique}
         products={products}
       />
+
+      {products.length === 0 && (
+        <section aria-labelledby="boutique-start-title" className="mt-5 overflow-hidden border border-luxury-gold/45 bg-[linear-gradient(145deg,rgba(212,175,55,0.12),rgba(10,10,10,0.98)_58%)] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-luxury-gold">Premiers pas</p>
+              <h2 id="boutique-start-title" className="serif-title mt-1 text-2xl text-white">Préparez votre boutique</h2>
+              <p className="mt-2 max-w-xl text-xs leading-5 text-zinc-400">
+                Ajoutez votre identité visuelle et votre premier article pour ouvrir une vitrine complète aux clients.
+              </p>
+            </div>
+            <span className="shrink-0 border border-luxury-gold/35 bg-black/40 px-2 py-1 font-mono text-[8px] uppercase tracking-wider text-luxury-gold">À configurer</span>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <button type="button" onClick={onOpenStorefront} className="group min-h-24 border border-luxury-border bg-black/45 p-3 text-left transition-colors hover:border-luxury-gold/70 hover:bg-luxury-gold/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-luxury-gold/60">
+              <ImagePlus className="h-5 w-5 text-luxury-gold" />
+              <strong className="mt-3 block font-mono text-[10px] uppercase tracking-wider text-white">Ajouter une couverture</strong>
+              <span className="mt-1 block text-[10px] leading-4 text-zinc-500">Personnaliser la vitrine</span>
+            </button>
+            <button type="button" onClick={onAddProductClick} className="group min-h-24 border border-luxury-gold/60 bg-luxury-gold p-3 text-left text-black transition-colors hover:bg-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+              <Plus className="h-5 w-5" />
+              <strong className="mt-3 block font-mono text-[10px] uppercase tracking-wider">Ajouter un article</strong>
+              <span className="mt-1 block text-[10px] leading-4 text-black/65">Créer la première fiche</span>
+            </button>
+            <button type="button" onClick={onOpenSettings} className="group min-h-24 border border-luxury-border bg-black/45 p-3 text-left transition-colors hover:border-luxury-gold/70 hover:bg-luxury-gold/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-luxury-gold/60">
+              <Store className="h-5 w-5 text-luxury-gold" />
+              <strong className="mt-3 block font-mono text-[10px] uppercase tracking-wider text-white">Compléter le profil</strong>
+              <span className="mt-1 block text-[10px] leading-4 text-zinc-500">Logo, description et réseaux</span>
+            </button>
+          </div>
+        </section>
+      )}
 
       {(openModerationNotes.length > 0 || moderationNotesError) && (
         <section aria-labelledby="moderation-notes-title" className="mb-5 border border-amber-700/55 bg-[linear-gradient(145deg,rgba(69,44,5,0.28),rgba(10,10,10,0.96))] p-4 sm:p-5 shadow-[0_14px_34px_rgba(0,0,0,0.28)]">

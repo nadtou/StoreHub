@@ -9,6 +9,7 @@ import {
   Eye,
   Heart,
   Loader2,
+  MessageSquare,
   ShoppingBag,
   Store,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import {
   generateShoeSizes,
   isShoeCategory,
 } from '../utils/productSizes';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 const COLOR_HEX: Record<string, string> = {
   noir: '#171717',
@@ -62,6 +64,8 @@ interface ProductDetailProps {
   toggleFavorite: (productId: string) => void;
   shouldTrackView?: boolean;
   onReserve: (selection: { selectedSize: string; selectedColor: string }) => Promise<void>;
+  onContactBoutique?: (product: Product) => void;
+  canContactBoutique?: boolean;
 }
 
 type DetailSection = 'description' | 'details' | 'boutique';
@@ -74,6 +78,8 @@ export default function ProductDetail({
   toggleFavorite,
   shouldTrackView = true,
   onReserve,
+  onContactBoutique,
+  canContactBoutique = true,
 }: ProductDetailProps) {
   const pageRef = useRef<HTMLDivElement>(null);
   const isShoeProduct = isShoeCategory(product.category);
@@ -110,7 +116,7 @@ export default function ProductDetail({
     if (sessionStorage.getItem(sessionKey)) return;
     sessionStorage.setItem(sessionKey, '1');
 
-    fetch(`/api/analytics/products/${product.id}/view`, {
+    firebaseAppCheckFetch(`/api/analytics/products/${product.id}/view`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ boutiqueId: product.boutiqueId }),
@@ -376,6 +382,17 @@ export default function ProductDetail({
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{reservationError}</span>
                   </div>
+                )}
+
+                {canContactBoutique && onContactBoutique && (
+                  <button
+                    type="button"
+                    onClick={() => onContactBoutique(product)}
+                    className="mt-2 flex min-h-12 w-full items-center justify-center gap-2 border border-luxury-gold/50 bg-luxury-gold/10 px-4 text-[10px] font-bold uppercase tracking-[0.14em] text-luxury-gold transition-colors hover:bg-luxury-gold/20 hover:border-luxury-gold"
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                    Contacter la boutique
+                  </button>
                 )}
 
                 <button

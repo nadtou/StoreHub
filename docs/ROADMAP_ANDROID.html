@@ -202,15 +202,16 @@
         <div class="verdict">
           <p class="eyebrow">Verdict actuel</p>
           <h3 id="verdict-title">Non, l'application n'est pas encore prête à 100 % pour le marché Android.</h3>
-          <p>La base se compile et les règles Firebase existent, mais la conversion mobile, la couverture des parcours critiques et plusieurs contrôles de sécurité restent à terminer.</p>
-          <p class="blocking"><strong>Blocages de lancement :</strong> projet Android absent, API mobile non configurée, parcours critiques encore non automatisés et paquet initial trop lourd.</p>
+          <p>La base web et les parcours métier critiques sont maintenant validés, mais la sécurité Firebase avancée, la conversion mobile et les essais sur appareils restent à terminer.</p>
+          <p class="blocking"><strong>Blocages de lancement :</strong> clé App Check et API HTTPS en attente, essai sur téléphone physique à réaliser et paquet initial trop lourd.</p>
         </div>
       </section>
 
       <section class="metrics" aria-label="Résultats de l'audit">
         <div class="metric"><strong class="ok">OK</strong><span>TypeScript sans erreur</span></div>
         <div class="metric"><strong class="ok">OK</strong><span>Construction de production</span></div>
-        <div class="metric"><strong class="ok">0</strong><span>Vulnérabilité npm</span></div>
+        <div class="metric"><strong class="ok">0</strong><span>Vulnérabilité npm élevée</span></div>
+        <div class="metric"><strong class="ok">51/51</strong><span>Contrôles automatisés réussis</span></div>
         <div class="metric"><strong class="warn">1,72 Mo</strong><span>Paquet JavaScript principal</span></div>
       </section>
 
@@ -249,24 +250,24 @@
       {id:"1.4",phase:1,title:"Corriger les vulnérabilités npm",desc:"Traiter 4 alertes élevées et 5 modérées sans casser l'application.",priority:"p0",duration:"Fait",status:"done",accept:"Aucune vulnérabilité élevée en dépendances de production.",depends:"1.3"},
       {id:"1.5",phase:1,title:"Ajouter la chaîne de vérification",desc:"Exécuter types, tests, construction et audit avec une commande unique.",priority:"p1",duration:"Fait",status:"done",accept:"Un échec bloque la livraison et donne un message exploitable.",depends:"1.4"},
 
-      {id:"2.1",phase:2,title:"Tester inscription et connexion client",desc:"Email, Google, vérification, reconnexion et mot de passe oublié.",priority:"p0",duration:"1 j",status:"todo",accept:"Chaque scénario réussit et chaque erreur est compréhensible.",depends:"1.5"},
-      {id:"2.2",phase:2,title:"Tester l'inscription boutique",desc:"Dossier, documents, attente, acceptation, refus et rollback Auth.",priority:"p0",duration:"1 j",status:"todo",accept:"Une boutique non approuvée ne peut pas entrer dans sa console.",depends:"2.1"},
-      {id:"2.3",phase:2,title:"Tester catalogue et stock",desc:"Créer, modifier, supprimer, tailles, pointures et baisse de stock.",priority:"p0",duration:"1 j",status:"todo",accept:"Le client et la boutique voient la même donnée après chaque action.",depends:"2.2"},
-      {id:"2.4",phase:2,title:"Tester réservation et commande",desc:"Création client, alerte boutique, statut, livraison et historique.",priority:"p0",duration:"1 j",status:"todo",accept:"Aucun doublon et toutes les transitions autorisées sont persistées.",depends:"2.3"},
-      {id:"2.5",phase:2,title:"Tester messagerie et modération",desc:"Messages client/boutique et commentaires administrateur/gérant.",priority:"p0",duration:"1 j",status:"todo",accept:"Le bon destinataire reçoit le contenu sans fuite inter-boutiques.",depends:"2.4"},
-      {id:"2.6",phase:2,title:"Tester les actions administrateur",desc:"Confirmer, suspendre, révoquer, réactiver et retour de navigation.",priority:"p0",duration:"1 j",status:"todo",accept:"Chaque action exige le rôle admin et produit l'état attendu.",depends:"2.5"},
+      {id:"2.1",phase:2,title:"Tester inscription et connexion client",desc:"Email, Google, vérification, reconnexion et mot de passe oublié.",priority:"p0",duration:"Fait",status:"done",accept:"Chaque scénario réussit et chaque erreur est compréhensible.",depends:"1.5"},
+      {id:"2.2",phase:2,title:"Tester l'inscription boutique",desc:"Dossier, documents, attente, acceptation, refus et rollback Auth.",priority:"p0",duration:"Fait",status:"done",accept:"Une boutique non approuvée ne peut pas entrer dans sa console.",depends:"2.1"},
+      {id:"2.3",phase:2,title:"Tester catalogue et stock",desc:"Créer, modifier, supprimer, tailles, pointures et baisse de stock.",priority:"p0",duration:"Fait",status:"done",accept:"Le client et la boutique voient la même donnée après chaque action.",depends:"2.2"},
+      {id:"2.4",phase:2,title:"Tester réservation et commande",desc:"Création client, alerte boutique, statut, livraison et historique.",priority:"p0",duration:"Fait",status:"done",accept:"Aucun doublon et toutes les transitions autorisées sont persistées.",depends:"2.3"},
+      {id:"2.5",phase:2,title:"Tester messagerie et modération",desc:"Messages client/boutique et commentaires administrateur/gérant.",priority:"p0",duration:"Fait",status:"done",accept:"Le bon destinataire reçoit le contenu sans fuite inter-boutiques.",depends:"2.4"},
+      {id:"2.6",phase:2,title:"Tester les actions administrateur",desc:"Confirmer, suspendre, révoquer, réactiver et retour de navigation.",priority:"p0",duration:"Fait",status:"done",accept:"Chaque action exige le rôle admin et produit l'état attendu.",depends:"2.5"},
 
-      {id:"3.1",phase:3,title:"Automatiser les tests des règles Firestore",desc:"Cas autorisés et refusés pour client, boutique et admin.",priority:"p0",duration:"1,5 j",status:"todo",accept:"La suite prouve l'isolation des comptes et des boutiques.",depends:"2.6"},
-      {id:"3.2",phase:3,title:"Automatiser les tests Storage",desc:"Propriétaire, formats, tailles et documents privés.",priority:"p0",duration:"1 j",status:"todo",accept:"Un fichier interdit ou d'un autre propriétaire est toujours refusé.",depends:"3.1"},
-      {id:"3.3",phase:3,title:"Vérifier la compression WebP",desc:"1080 px maximum, qualité 80 %, erreurs et limites serveur.",priority:"p1",duration:"0,5 j",status:"todo",accept:"Toutes les images livrées respectent poids, format et orientation.",depends:"3.2"},
-      {id:"3.4",phase:3,title:"Activer Firebase App Check",desc:"Observer les métriques puis appliquer le contrôle progressivement.",priority:"p0",duration:"1 j",status:"todo",accept:"Firestore, Storage et API rejettent les clients non attestés en production.",depends:"3.2"},
-      {id:"3.5",phase:3,title:"Préparer sauvegarde et restauration",desc:"Exporter les données et tester une restauration isolée.",priority:"p1",duration:"1 j",status:"todo",accept:"La procédure, la fréquence et les responsables sont documentés.",depends:"3.1"},
+      {id:"3.1",phase:3,title:"Automatiser les tests des règles Firestore",desc:"Cas autorisés et refusés pour client, boutique et admin.",priority:"p0",duration:"Fait",status:"done",accept:"La suite prouve l'isolation des comptes et des boutiques.",depends:"2.6"},
+      {id:"3.2",phase:3,title:"Automatiser les tests Storage",desc:"Propriétaire, formats, tailles et documents privés.",priority:"p0",duration:"Fait",status:"done",accept:"Un fichier interdit ou d'un autre propriétaire est toujours refusé.",depends:"3.1"},
+      {id:"3.3",phase:3,title:"Vérifier la compression WebP",desc:"1080 px maximum, qualité 80 %, erreurs et limites serveur.",priority:"p1",duration:"Fait",status:"done",accept:"Toutes les images livrées respectent poids, format et orientation.",depends:"3.2"},
+      {id:"3.4",phase:3,title:"Activer Firebase App Check",desc:"Le domaine Firebase Hosting est utilisable. La clé reCAPTCHA et l'observation restent requises avant le blocage.",priority:"p0",duration:"En attente clé",status:"doing",accept:"Firestore, Storage et API rejettent les clients non attestés en production.",depends:"3.2"},
+      {id:"3.5",phase:3,title:"Préparer sauvegarde et restauration",desc:"Exporter les données et tester une restauration isolée.",priority:"p1",duration:"Fait",status:"done",accept:"La procédure, la fréquence et les responsables sont documentés.",depends:"3.1"},
 
-      {id:"4.1",phase:4,title:"Décider l'identifiant Android définitif",desc:"Choisir le package ID, le nom public et les environnements.",priority:"p0",duration:"0,5 j",status:"todo",accept:"L'identifiant ne changera plus après la première publication.",depends:"3.5"},
-      {id:"4.2",phase:4,title:"Installer et initialiser Capacitor",desc:"Ajouter le runtime, la CLI et configurer la sortie Vite.",priority:"p0",duration:"0,5 j",status:"todo",accept:"La synchronisation copie correctement la construction web.",depends:"4.1"},
-      {id:"4.3",phase:4,title:"Générer le projet Android",desc:"Créer le dossier Android et l'ouvrir dans Android Studio.",priority:"p0",duration:"0,5 j",status:"todo",accept:"Gradle compile une version debug sans erreur.",depends:"4.2"},
-      {id:"4.4",phase:4,title:"Configurer l'origine de l'API",desc:"Remplacer les appels relatifs /api par une URL HTTPS par environnement.",priority:"p0",duration:"1 j",status:"todo",accept:"Toutes les API fonctionnent depuis la WebView, sans localhost.",depends:"4.3"},
-      {id:"4.5",phase:4,title:"Tester le premier démarrage Android",desc:"Installer sur émulateur et téléphone physique.",priority:"p0",duration:"1 j",status:"todo",accept:"Démarrage, navigation et appels API réussissent sur les deux cibles.",depends:"4.4"},
+      {id:"4.1",phase:4,title:"Décider l'identifiant Android définitif",desc:"StoreHub utilise le paquet Firebase existant com.IAuniver.storehub.",priority:"p0",duration:"Fait",status:"done",accept:"L'identifiant ne changera plus après la première publication.",depends:"3.5"},
+      {id:"4.2",phase:4,title:"Installer et initialiser Capacitor",desc:"Capacitor 8, la CLI et la sortie Vite mobile sont configurés.",priority:"p0",duration:"Fait",status:"done",accept:"La synchronisation copie correctement la construction web.",depends:"4.1"},
+      {id:"4.3",phase:4,title:"Générer le projet Android",desc:"Projet généré, Firebase associé et APK debug compilé avec succès.",priority:"p0",duration:"Fait",status:"done",accept:"Gradle compile une version debug sans erreur.",depends:"4.2"},
+      {id:"4.4",phase:4,title:"Configurer l'origine de l'API",desc:"La sélection par environnement est prête ; l'API HTTPS de production reste à déployer.",priority:"p0",duration:"En cours",status:"doing",accept:"Toutes les API fonctionnent depuis la WebView, sans localhost.",depends:"4.3"},
+      {id:"4.5",phase:4,title:"Tester le premier démarrage Android",desc:"Émulateur API 36 validé : installation, démarrage à froid et navigation Client. Téléphone physique restant.",priority:"p0",duration:"En cours",status:"doing",accept:"Démarrage, navigation et appels API réussissent sur les deux cibles.",depends:"4.4"},
 
       {id:"5.1",phase:5,title:"Adapter Google Sign-In à Android",desc:"Configurer l'application Firebase Android, SHA et retour d'authentification.",priority:"p0",duration:"1,5 j",status:"todo",accept:"Connexion et déconnexion Google passent sur appareil réel.",depends:"4.5"},
       {id:"5.2",phase:5,title:"Adapter caméra et galerie",desc:"Permissions, photo, sélection, compression et annulation.",priority:"p0",duration:"1 j",status:"todo",accept:"Les refus de permission ne bloquent ni ne font planter l'app.",depends:"4.5"},
@@ -292,7 +293,13 @@
     let activeFilter = "all";
     let query = "";
 
-    for (const task of tasks) if (state[task.id]) task.status = state[task.id];
+    const verifiedCompletedTasks = new Set(["1.1", "1.2", "1.3", "1.4", "1.5", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.1", "3.2", "3.3", "3.5", "4.1", "4.2", "4.3"]);
+    const verifiedInProgressTasks = new Set(["3.4", "4.4", "4.5"]);
+    for (const task of tasks) {
+      if (verifiedCompletedTasks.has(task.id)) task.status = "done";
+      else if (verifiedInProgressTasks.has(task.id)) task.status = "doing";
+      else if (state[task.id]) task.status = state[task.id];
+    }
 
     function save() {
       const value = Object.fromEntries(tasks.map(task => [task.id, task.status]));

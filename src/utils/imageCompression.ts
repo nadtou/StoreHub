@@ -9,11 +9,46 @@ interface CompressImageOptions {
   cropSquare?: boolean;
 }
 
+export interface ImageGeometry {
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  targetWidth: number;
+  targetHeight: number;
+}
+
 export interface CompressedImage {
   blob: Blob;
   dataUrl: string;
   width: number;
   height: number;
+}
+
+export function calculateImageGeometry(
+  width: number,
+  height: number,
+  maxDimension = IMAGE_MAX_DIMENSION,
+  cropSquare = false,
+): ImageGeometry {
+  if (![width, height, maxDimension].every(Number.isFinite) || width <= 0 || height <= 0 || maxDimension <= 0) {
+    throw new Error('Dimensions d’image invalides.');
+  }
+
+  const sourceWidth = cropSquare ? Math.min(width, height) : width;
+  const sourceHeight = cropSquare ? Math.min(width, height) : height;
+  const sourceX = cropSquare ? Math.max(0, (width - sourceWidth) / 2) : 0;
+  const sourceY = cropSquare ? Math.max(0, (height - sourceHeight) / 2) : 0;
+  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+
+  return {
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    targetWidth: Math.max(1, Math.round(sourceWidth * scale)),
+    targetHeight: Math.max(1, Math.round(sourceHeight * scale)),
+  };
 }
 
 function canvasToWebP(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -51,6 +86,12 @@ export async function compressImageToWebP(
   const maxDimension = options.maxDimension ?? IMAGE_MAX_DIMENSION;
   const quality = options.quality ?? IMAGE_WEBP_QUALITY;
   const maxBytes = options.maxBytes ?? IMAGE_MAX_BYTES;
+  if (!Number.isFinite(quality) || quality <= 0 || quality > 1) {
+    throw new Error('La qualité WebP doit être comprise entre 0 et 1.');
+  }
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+    throw new Error('La limite de poids de l’image est invalide.');
+  }
   const sourceBlob = await sourceToBlob(source);
 
   if (!sourceBlob.type.startsWith('image/')) {
@@ -60,13 +101,9 @@ export async function compressImageToWebP(
   const bitmap = await createImageBitmap(sourceBlob, { imageOrientation: 'from-image' });
   try {
     const cropSquare = options.cropSquare === true;
-    const sourceWidth = cropSquare ? Math.min(bitmap.width, bitmap.height) : bitmap.width;
-    const sourceHeight = cropSquare ? Math.min(bitmap.width, bitmap.height) : bitmap.height;
-    const sourceX = cropSquare ? Math.max(0, (bitmap.width - sourceWidth) / 2) : 0;
-    const sourceY = cropSquare ? Math.max(0, (bitmap.height - sourceHeight) / 2) : 0;
-    const initialScale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
-    let targetWidth = Math.max(1, Math.round(sourceWidth * initialScale));
-    let targetHeight = Math.max(1, Math.round(sourceHeight * initialScale));
+    const geometry = calculateImageGeometry(bitmap.width, bitmap.height, maxDimension, cropSquare);
+    let targetWidth = geometry.targetWidth;
+    let targetHeight = geometry.targetHeight;
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const canvas = document.createElement('canvas');
@@ -79,10 +116,10 @@ export async function compressImageToWebP(
       context.imageSmoothingQuality = 'high';
       context.drawImage(
         bitmap,
-        sourceX,
-        sourceY,
-        sourceWidth,
-        sourceHeight,
+        geometry.sourceX,
+        geometry.sourceY,
+        geometry.sourceWidth,
+        geometry.sourceHeight,
         0,
         0,
         targetWidth,
@@ -99,8 +136,8 @@ export async function compressImageToWebP(
         };
       }
 
-      targetWidth = Math.max(320, Math.round(targetWidth * 0.88));
-      targetHeight = Math.max(320, Math.round(targetHeight * 0.88));
+      targetWidth = Math.max(1, Math.round(targetWidth * 0.88));
+      targetHeight = Math.max(1, Math.round(targetHeight * 0.88));
     }
 
     throw new Error("L’image reste supérieure à 1 Mo après optimisation.");

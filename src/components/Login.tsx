@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AccountApprovalStatus, UserProfile, UserRole } from '../types';
+import { UserProfile, UserRole } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Eye, EyeOff, Upload, Check, MapPin, User, Mail, Lock, AlertTriangle } from 'lucide-react';
 import {
@@ -8,6 +8,7 @@ import {
   initFirebase,
   uploadBoutiqueRegistrationLogo,
   uploadBoutiqueVerificationDocument,
+  uploadClientIdentityDocument,
 } from '../firebase';
 import { 
   signInWithEmailAndPassword, 
@@ -22,6 +23,8 @@ import {
 } from 'firebase/auth';
 import { firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch';
 import { compressImageToWebP } from '../utils/imageCompression';
+import { getAccountBlockingMessage } from '../utils/accountAccess';
+import { rollbackBoutiqueRegistration } from '../utils/registrationRollback';
 
 interface LoginProps {
   onLogin: (role: UserRole, email: string, extraProfile?: { displayName?: string; photoURL?: string; uid?: string }) => Promise<void>;
@@ -110,6 +113,23 @@ export default function Login({ onLogin }: LoginProps) {
   const [showRegClientConfirmPassword, setShowRegClientConfirmPassword] = useState(false);
   const [clientCity, setClientCity] = useState('Alger');
   const [clientAcceptedTerms, setClientAcceptedTerms] = useState(false);
+  const [clientIdentityFile, setClientIdentityFile] = useState<File | null>(null);
+  const [isDragOverClientIdentity, setIsDragOverClientIdentity] = useState(false);
+
+  const selectClientIdentityDocument = (file: File) => {
+    if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setClientIdentityFile(null);
+      setAuthError('La pièce d’identité doit être un PDF ou une image JPG, PNG ou WebP.');
+      return;
+    }
+    if (file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      setClientIdentityFile(null);
+      setAuthError('La pièce d’identité doit peser au maximum 5 Mo.');
+      return;
+    }
+    setClientIdentityFile(file);
+    setAuthError(null);
+  };
 
   // Stagger configurations for elements
   const containerVariants = {
@@ -200,6 +220,9 @@ export default function Login({ onLogin }: LoginProps) {
     if (code.includes("auth/operation-not-allowed")) {
       return "Le service d’authentification est temporairement indisponible.";
     }
+    if (code.includes("auth/network-request-failed")) {
+      return "Connexion à Firebase impossible. Vérifiez votre réseau puis réessayez.";
+    }
     if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password") || code.includes("auth/user-not-found")) {
       return "Identifiants incorrects. Veuillez vérifier votre adresse email et votre mot de passe.";
     }
@@ -213,16 +236,6 @@ export default function Login({ onLogin }: LoginProps) {
       return "L'adresse email saisie est invalide.";
     }
     return `Erreur d'authentification: ${error.message || error}`;
-  };
-
-  const getAccountBlockingMessage = (profile: UserProfile): string | null => {
-    const status: AccountApprovalStatus = profile.accountStatus || (profile.role === UserRole.ADMIN ? 'approved' : 'pending');
-    if (status === 'pending') return "Votre compte est en attente de confirmation par l’administration.";
-    if (status === 'rejected') {
-      return `Votre demande d’ouverture a été refusée${profile.approvalRejectionReason ? ` : ${profile.approvalRejectionReason}` : '.'}`;
-    }
-    if (status === 'suspended') return "Votre compte est suspendu. Contactez l’administration.";
-    return null;
   };
 
   const loadApprovedProfile = async (auth: Awaited<ReturnType<typeof initFirebase>>['auth'], expectedRole: UserRole) => {
@@ -365,15 +378,14 @@ export default function Login({ onLogin }: LoginProps) {
       );
     } catch (err: any) {
       if (!registrationCommitted) {
-        for (const uploadedPath of [...uploadedPaths].reverse()) {
-          await deleteUploadedStorageFile(uploadedPath).catch((cleanupError) => {
-            console.error('Impossible de supprimer un fichier après l’échec de l’inscription:', cleanupError);
-          });
-        }
-        if (createdUser) {
-          await deleteUser(createdUser).catch((cleanupError) => {
-            console.error('Impossible de supprimer le compte Auth après l’échec de l’inscription:', cleanupError);
-          });
+        const cleanupFailures = await rollbackBoutiqueRegistration(
+          uploadedPaths,
+          createdUser,
+          deleteUploadedStorageFile,
+          deleteUser,
+        );
+        for (const cleanupFailure of cleanupFailures) {
+          console.error(`Nettoyage incomplet après l’échec de l’inscription (${cleanupFailure.target}):`, cleanupFailure.error);
         }
       }
       setAuthError(translateAuthError(err));
@@ -393,9 +405,6 @@ export default function Login({ onLogin }: LoginProps) {
       const credential = await signInWithEmailAndPassword(auth, clientEmail, clientPassword);
       if (!credential.user.emailVerified) {
         await sendEmailVerification(credential.user).catch(() => undefined);
-        await signOut(auth);
-        setAuthNotice("Votre adresse email n’est pas encore vérifiée. Un nouveau lien vient de vous être envoyé. Vérifiez votre boîte email avant de vous connecter.");
-        return;
       }
       await loadApprovedProfile(auth, UserRole.CLIENT);
       await onLogin(UserRole.CLIENT, credential.user.email || clientEmail, { uid: credential.user.uid });
@@ -505,16 +514,24 @@ export default function Login({ onLogin }: LoginProps) {
       setAuthError("Le mot de passe doit contenir au moins 8 caractères.");
       return;
     }
+    if (!clientIdentityFile) {
+      setAuthError("Ajoutez une photo ou un PDF de votre pièce d’identité.");
+      return;
+    }
 
     setIsLoading(true);
     let createdUser: FirebaseUser | null = null;
+    let profileCommitted = false;
+    let uploadedIdentityPath = '';
     try {
       const { auth } = await initFirebase();
       const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, regClientPassword);
       createdUser = credential.user;
-      void sendEmailVerification(credential.user).catch(error => {
-        console.warn("L’email de vérification n’a pas pu être envoyé, mais le compte client reste actif.", error);
-      });
+      auth.languageCode = 'fr';
+      await sendEmailVerification(credential.user);
+      const identityUpload = await uploadClientIdentityDocument(credential.user.uid, clientIdentityFile);
+      uploadedIdentityPath = identityUpload.fullPath;
+      const submittedAt = new Date().toISOString();
 
       const newProfile = {
         uid: credential.user.uid,
@@ -533,7 +550,14 @@ export default function Login({ onLogin }: LoginProps) {
           favoritesCount: 0,
           viewedProducts: 0
         },
-        createdAt: new Date().toISOString()
+        accountStatus: 'approved',
+        approvalSubmittedAt: submittedAt,
+        approvalReviewedAt: submittedAt,
+        identityDocumentName: identityUpload.name,
+        identityDocumentPath: identityUpload.fullPath,
+        identityVerificationStatus: 'pending',
+        identitySubmittedAt: submittedAt,
+        createdAt: submittedAt
       };
 
       const profileResponse = await firebaseAuthenticatedFetch('/api/users/profile', {
@@ -546,16 +570,21 @@ export default function Login({ onLogin }: LoginProps) {
         throw new Error(profilePayload?.error || "Le profil client n’a pas pu être enregistré.");
       }
 
+      profileCommitted = true;
       createdUser = null;
       setRegClientPassword('');
       setRegClientConfirmPassword('');
+      setClientIdentityFile(null);
       await onLogin(UserRole.CLIENT, normalizedEmail, {
+        uid: credential.user.uid,
         displayName: normalizedName,
         photoURL: newProfile.photoURL,
-        uid: credential.user.uid,
       });
     } catch (err: any) {
-      if (createdUser) await deleteUser(createdUser).catch(() => undefined);
+      if (!profileCommitted && uploadedIdentityPath) {
+        await deleteUploadedStorageFile(uploadedIdentityPath).catch(() => undefined);
+      }
+      if (!profileCommitted && createdUser) await deleteUser(createdUser).catch(() => undefined);
       setAuthError(translateAuthError(err));
     } finally {
       setIsLoading(false);
@@ -730,7 +759,7 @@ export default function Login({ onLogin }: LoginProps) {
                 boxShadow: "0 25px 50px -12px rgba(197,168,80,0.2)"
               }}
               whileTap={{ scale: 0.99 }}
-              onClick={() => setView('client_login')}
+              onClick={() => { setAuthError(null); setAuthNotice(null); setView('client_login'); }}
               className="group relative cursor-pointer bg-[#111111] rounded-t-[7rem] rounded-b-[1.5rem] p-3 sm:p-4 md:p-5 mx-auto shadow-2xl transition-all duration-500 ease-out flex h-[330px] sm:h-[390px] md:h-[420px] w-full max-w-[170px] flex-col justify-between overflow-hidden"
             >
               {/* Inner Golden Stroke Inset Frame with smooth scale on hover */}
@@ -799,7 +828,7 @@ export default function Login({ onLogin }: LoginProps) {
                 boxShadow: "0 25px 50px -12px rgba(197,168,80,0.22)"
               }}
               whileTap={{ scale: 0.99 }}
-              onClick={() => setView('boutique_login')}
+              onClick={() => { setAuthError(null); setAuthNotice(null); setView('boutique_login'); }}
               className="group relative cursor-pointer bg-[#FAF8F5] rounded-t-[7rem] rounded-b-[1.5rem] p-3 sm:p-4 md:p-5 mx-auto shadow-2xl transition-all duration-500 ease-out flex h-[330px] sm:h-[390px] md:h-[420px] w-full max-w-[170px] flex-col justify-between overflow-hidden border border-[#E9E4DB]"
             >
               {/* Inner Golden Stroke Inset Frame */}
@@ -908,7 +937,7 @@ export default function Login({ onLogin }: LoginProps) {
             {/* Retour Button placed below the line */}
             <div className="flex justify-start mt-2">
               <button 
-                onClick={() => setView('gate')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('gate'); }}
                 className="flex items-center gap-2 text-[10px] tracking-[0.18em] font-mono text-[#C5A850] hover:text-[#111111] transition-colors group cursor-pointer"
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-full border border-current/30 transition-colors shrink-0">
@@ -1219,7 +1248,7 @@ export default function Login({ onLogin }: LoginProps) {
               <span className="block text-xs font-sans text-zinc-500">Pas encore de boutique ?</span>
               <button
                 type="button"
-                onClick={() => setView('boutique_register')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('boutique_register'); }}
                 className="w-full bg-[#FAF8F5] hover:bg-[#FAF8F5]/80 active:scale-99 border border-[#111111]/80 text-[#111111] text-xs font-bold font-sans tracking-widest py-3.5 rounded-xl shadow-[0_4px_10px_rgba(0,0,0,0.06)] transition-all cursor-pointer"
               >
                 CRÉER UN COMPTE
@@ -1253,7 +1282,7 @@ export default function Login({ onLogin }: LoginProps) {
           {/* Header Bar */}
           <div className="w-full max-w-md mx-auto pt-5 md:pt-6 flex justify-between items-center select-none">
             <button 
-              onClick={() => setView('boutique_login')}
+              onClick={() => { setAuthError(null); setAuthNotice(null); setView('boutique_login'); }}
               className="flex items-center gap-2 text-xs font-mono text-zinc-600 hover:text-black transition-colors group cursor-pointer"
             >
               <div className="flex items-center justify-center w-7 h-7 rounded-full border border-current/30 transition-colors shrink-0">
@@ -1526,7 +1555,7 @@ export default function Login({ onLogin }: LoginProps) {
                 <div className="text-center pt-2">
                   <button
                     type="button"
-                    onClick={() => setView('boutique_login')}
+                    onClick={() => { setAuthError(null); setAuthNotice(null); setView('boutique_login'); }}
                     className="text-xs text-zinc-600 hover:text-[#C5A850] transition-colors cursor-pointer"
                   >
                     Déjà inscrit ? <span className="underline font-medium">Se connecter</span>
@@ -1568,7 +1597,7 @@ export default function Login({ onLogin }: LoginProps) {
             <div className="flex justify-start mt-2">
               <button 
                 type="button"
-                onClick={() => setView('gate')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('gate'); }}
                 className="flex items-center gap-2 text-[10px] tracking-[0.18em] font-mono text-[#C5A850] hover:text-white transition-colors group cursor-pointer"
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-full border border-current/30 transition-colors shrink-0">
@@ -1689,7 +1718,7 @@ export default function Login({ onLogin }: LoginProps) {
             {/* Retour Button placed below the line */}
             <div className="flex justify-start mt-2">
               <button 
-                onClick={() => setView('gate')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('gate'); }}
                 className="flex items-center gap-2 text-[10px] tracking-[0.18em] font-mono text-[#C5A850] hover:text-white transition-colors group cursor-pointer"
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-full border border-current/30 transition-colors shrink-0">
@@ -1938,7 +1967,7 @@ export default function Login({ onLogin }: LoginProps) {
               <span className="block text-xs font-sans text-zinc-500">Pas encore de compte membre ?</span>
               <button
                 type="button"
-                onClick={() => setView('client_register')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('client_register'); }}
                 className="w-full bg-[#181818] hover:bg-[#222222] active:scale-99 border border-[#C5A850]/50 text-white text-xs font-bold font-sans tracking-widest py-3.5 rounded-xl shadow-[0_4px_12px_rgba(0,0,0,0.5)] transition-all cursor-pointer"
               >
                 CRÉER MON COMPTE CLIENT
@@ -1980,7 +2009,7 @@ export default function Login({ onLogin }: LoginProps) {
             {/* Retour Button placed below the line */}
             <div className="flex justify-start mt-2">
               <button 
-                onClick={() => setView('client_login')}
+                onClick={() => { setAuthError(null); setAuthNotice(null); setView('client_login'); }}
                 className="flex items-center gap-2 text-[10px] tracking-[0.18em] font-mono text-[#C5A850] hover:text-white transition-colors group cursor-pointer"
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-full border border-current/30 transition-colors shrink-0">
@@ -2082,6 +2111,58 @@ export default function Login({ onLogin }: LoginProps) {
                 </div>
               </div>
 
+              {/* Pièce d'identité */}
+              <div className="space-y-2">
+                <label className="block text-[10px] uppercase tracking-[0.2em] font-mono text-zinc-300 font-semibold">
+                  PIÈCE D’IDENTITÉ
+                </label>
+                <label
+                  onDragOver={event => { event.preventDefault(); setIsDragOverClientIdentity(true); }}
+                  onDragLeave={() => setIsDragOverClientIdentity(false)}
+                  onDrop={event => {
+                    event.preventDefault();
+                    setIsDragOverClientIdentity(false);
+                    const file = event.dataTransfer.files?.[0];
+                    if (file) selectClientIdentityDocument(file);
+                  }}
+                  className={`flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-5 py-5 text-center transition-all ${
+                    isDragOverClientIdentity
+                      ? 'border-[#C5A850] bg-[#C5A850]/10'
+                      : clientIdentityFile
+                        ? 'border-emerald-700/70 bg-emerald-950/20'
+                        : 'border-[#3A3A3A] bg-[#161616] hover:border-[#C5A850]/70'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    required
+                    accept="application/pdf,image/jpeg,image/png,image/webp"
+                    disabled={isLoading}
+                    className="sr-only"
+                    onChange={event => {
+                      const file = event.target.files?.[0];
+                      if (file) selectClientIdentityDocument(file);
+                    }}
+                  />
+                  {clientIdentityFile ? (
+                    <>
+                      <Check className="mb-2 h-5 w-5 text-emerald-400" />
+                      <span className="max-w-full truncate text-xs font-medium text-white">{clientIdentityFile.name}</span>
+                      <span className="mt-1 text-[9px] font-mono text-emerald-400">PRÊTE À ÊTRE ENVOYÉE</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="mb-2 h-5 w-5 text-[#C5A850]" />
+                      <span className="text-xs text-zinc-300">Photo ou PDF de la carte d’identité</span>
+                      <span className="mt-1 text-[9px] font-mono text-zinc-500">JPG, PNG, WEBP OU PDF · 5 MO MAX.</span>
+                    </>
+                  )}
+                </label>
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  Votre compte sera ouvert immédiatement. L’administration vérifiera ensuite ce document privé.
+                </p>
+              </div>
+
               {/* Password Input Field */}
               <div className="space-y-2">
                 <label className="block text-[10px] uppercase tracking-[0.2em] font-mono text-zinc-300 font-semibold">
@@ -2175,7 +2256,7 @@ export default function Login({ onLogin }: LoginProps) {
                 <div className="text-center pt-2">
                   <button
                     type="button"
-                    onClick={() => setView('client_login')}
+                    onClick={() => { setAuthError(null); setAuthNotice(null); setView('client_login'); }}
                     className="text-xs text-zinc-400 hover:text-[#C5A850] transition-colors cursor-pointer"
                   >
                     Déjà inscrit ? <span className="underline font-medium text-white hover:text-[#C5A850]">Se connecter</span>

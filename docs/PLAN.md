@@ -49,12 +49,12 @@ Les parcours inscription/connexion, réservation/commande, catalogue, messagerie
 
 ### Critères d'acceptation
 
-- [ ] Le compte client est créé, vérifié, reconnecté et réinitialisé correctement.
-- [ ] Une boutique soumet son dossier, attend la validation, puis accède uniquement après approbation.
-- [ ] Une réservation ou commande est visible des deux côtés avec le même statut.
-- [ ] Les messages et commentaires de modération arrivent au bon destinataire.
-- [ ] Suspendre, confirmer, révoquer et réactiver sont testés avec contrôle d'autorisation.
-- [ ] Les données d'un compte ne sont jamais accessibles depuis un autre compte.
+- [x] Le compte client est créé, vérifié, reconnecté et réinitialisé correctement.
+- [x] Une boutique soumet son dossier, attend la validation, puis accède uniquement après approbation.
+- [x] Une réservation ou commande est visible des deux côtés avec le même statut.
+- [x] Les messages et commentaires de modération arrivent au bon destinataire.
+- [x] Suspendre, confirmer, révoquer et réactiver sont testés avec contrôle d'autorisation.
+- [x] Les données d'un compte ne sont jamais accessibles depuis un autre compte.
 
 ## Bloquée par
 
@@ -72,11 +72,11 @@ Une couche Firebase vérifiée par émulateurs et App Check, avec règles, index
 
 ### Critères d'acceptation
 
-- [ ] Les règles Firestore et Storage ont des tests positifs et négatifs par rôle.
+- [x] Les règles Firestore et Storage ont des tests positifs et négatifs par rôle.
 - [ ] App Check est activé progressivement après observation des métriques.
-- [ ] Les images sont WebP, 1080 px maximum, qualité 80 %, et respectent la limite serveur.
+- [x] Les images sont WebP, 1080 px maximum, qualité 80 %, et respectent la limite serveur.
 - [ ] Les erreurs hors-ligne, délais et doubles clics n'entraînent ni doublon ni perte silencieuse.
-- [ ] Les sauvegardes et la procédure de restauration sont documentées et testées.
+- [x] Les sauvegardes et la procédure de restauration sont documentées et testées.
 
 ## Bloquée par
 

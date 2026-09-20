@@ -19,6 +19,7 @@ import fs from "fs";
 import path from "path";
 import { Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteStatus, Product, UserProfile, VisibilityPoint } from "../types";
 import { ensureRequiredClothingSizes, generateShoeSizes, isShoeCategory } from "../utils/productSizes";
+import { calculateDeliveredStock, isOrderStatusTransitionAllowed } from "../utils/commerceRules";
 
 // Load Firebase configuration from the auto-generated config file
 let firebaseConfig: any = {};
@@ -292,6 +293,13 @@ export async function resetLegacyDemoCountersOnce(): Promise<void> {
 // Live Client-Boutique Chat helper functions
 // -------------------------------------------------------------
 
+export interface ChatMessageProductContext {
+  productId: string;
+  productName: string;
+  productImage: string;
+  productPrice: string;
+}
+
 export interface ChatMessage {
   id: string;
   chatId: string;
@@ -307,6 +315,7 @@ export interface ChatMessage {
   senderRole: "client" | "boutique";
   text: string;
   createdAt: string;
+  productContext?: ChatMessageProductContext;
 }
 
 const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId || "(default)";
@@ -319,13 +328,37 @@ function firestoreDocumentName(collectionId: string, documentId: string): string
 
 function firestoreStringFields(message: ChatMessage) {
   return Object.fromEntries(
-    Object.entries(message).map(([key, value]) => [key, { stringValue: String(value ?? "") }]),
+    Object.entries(message)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => {
+        if (key === "productContext" && value && typeof value === "object") {
+          return [key, { stringValue: JSON.stringify(value) }];
+        }
+        return [key, { stringValue: String(value ?? "") }];
+      }),
   );
 }
 
 function chatMessageFromRest(document: any): ChatMessage {
   const fields = document?.fields || {};
-  const value = (key: keyof ChatMessage) => String(fields[key]?.stringValue || "");
+  const value = (key: string) => String(fields[key]?.stringValue || "");
+  let productContext: ChatMessageProductContext | undefined;
+  const rawProduct = fields.productContext?.stringValue;
+  if (rawProduct) {
+    try {
+      const parsed = JSON.parse(rawProduct);
+      if (parsed && typeof parsed === "object" && typeof parsed.productId === "string") {
+        productContext = {
+          productId: String(parsed.productId || ""),
+          productName: String(parsed.productName || ""),
+          productImage: String(parsed.productImage || ""),
+          productPrice: String(parsed.productPrice || ""),
+        };
+      }
+    } catch {
+      productContext = undefined;
+    }
+  }
   return {
     id: value("id"),
     chatId: value("chatId"),
@@ -341,6 +374,7 @@ function chatMessageFromRest(document: any): ChatMessage {
     senderRole: value("senderRole") as ChatMessage["senderRole"],
     text: value("text"),
     createdAt: value("createdAt"),
+    ...(productContext ? { productContext } : {}),
   };
 }
 
@@ -664,8 +698,82 @@ export async function updateBoutiqueAuthenticated(
   return boutique;
 }
 
-export async function deleteBoutiqueAuthenticated(boutiqueId: string, idToken: string): Promise<void> {
-  await deleteAuthenticatedDocument("boutiques", boutiqueId, idToken);
+export async function deleteBoutiqueAuthenticated(
+  boutiqueId: string,
+  idToken: string,
+): Promise<{
+  products: number;
+  collections: number;
+  orders: number;
+  moderationNotes: number;
+  chats: number;
+}> {
+  const boutiqueDocument = await getAuthenticatedRawDocument("boutiques", boutiqueId, idToken);
+  if (!boutiqueDocument) {
+    const error: any = new Error("Boutique introuvable.");
+    error.status = 404;
+    throw error;
+  }
+
+  const boutique = objectFromFirestoreDocument<Boutique>(boutiqueDocument);
+  const [products, collections, orders, moderationNotes, chats, applicationDocument, ownerDocument] = await Promise.all([
+    queryAuthenticatedDocuments<{ id: string }>("products", "boutiqueId", boutiqueId, idToken),
+    queryAuthenticatedDocuments<{ id: string }>("collections", "boutiqueId", boutiqueId, idToken),
+    queryAuthenticatedDocuments<{ id: string }>("orders", "boutiqueId", boutiqueId, idToken),
+    queryAuthenticatedDocuments<{ id: string }>("moderationNotes", "boutiqueId", boutiqueId, idToken),
+    queryAuthenticatedDocuments<{ id: string }>("chats", "boutiqueId", boutiqueId, idToken),
+    getAuthenticatedRawDocument("boutiqueApplications", boutiqueId, idToken),
+    boutique.ownerId ? getAuthenticatedRawDocument("users", boutique.ownerId, idToken) : Promise.resolve(null),
+  ]);
+
+  const relatedDocuments = [
+    ...products.map(item => ({ collectionId: "products", id: item.id })),
+    ...collections.map(item => ({ collectionId: "collections", id: item.id })),
+    ...orders.map(item => ({ collectionId: "orders", id: item.id })),
+    ...moderationNotes.map(item => ({ collectionId: "moderationNotes", id: item.id })),
+    ...chats.map(item => ({ collectionId: "chats", id: item.id })),
+  ].filter(item => item.id);
+
+  // Keep commits below Firestore's 500-write limit. The boutique itself is
+  // removed only after every related record has been cleared successfully.
+  for (let index = 0; index < relatedDocuments.length; index += 400) {
+    const writes = relatedDocuments.slice(index, index + 400).map(item => ({
+      delete: firestoreDocumentName(item.collectionId, item.id),
+    }));
+    await commitAuthenticatedWrites(writes, idToken);
+  }
+
+  const finalWrites: any[] = [];
+  if (applicationDocument) {
+    finalWrites.push({ delete: firestoreDocumentName("boutiqueApplications", boutiqueId) });
+  }
+  if (ownerDocument && boutique.ownerId) {
+    const owner = objectFromFirestoreDocument<UserProfile>(ownerDocument);
+    const reviewedAt = new Date().toISOString();
+    finalWrites.push({
+      update: {
+        name: firestoreDocumentName("users", boutique.ownerId),
+        fields: firestoreFieldsFromObject({
+          ...owner,
+          uid: boutique.ownerId,
+          accountStatus: "rejected",
+          approvalReviewedAt: reviewedAt,
+          approvalRejectionReason: "Boutique supprimée par l’administration.",
+        }),
+      },
+      currentDocument: { updateTime: ownerDocument.updateTime },
+    });
+  }
+  finalWrites.push({ delete: firestoreDocumentName("boutiques", boutiqueId) });
+  await commitAuthenticatedWrites(finalWrites, idToken);
+
+  return {
+    products: products.length,
+    collections: collections.length,
+    orders: orders.length,
+    moderationNotes: moderationNotes.length,
+    chats: chats.length,
+  };
 }
 
 export async function syncBoutiqueIdentityInProductsAuthenticated(
@@ -693,7 +801,8 @@ export async function getAllUsersAuthenticated(idToken: string): Promise<UserPro
 
 export async function updateAccountApprovalAuthenticated(
   uid: string,
-  updates: Pick<UserProfile, 'accountStatus' | 'approvalReviewedAt' | 'approvalRejectionReason'>,
+  updates: Pick<UserProfile, 'accountStatus' | 'approvalReviewedAt' | 'approvalRejectionReason'>
+    & Partial<Pick<UserProfile, 'identityVerificationStatus' | 'identityReviewedAt'>>,
   idToken: string,
 ): Promise<UserProfile> {
   const userDocument = await getAuthenticatedRawDocument("users", uid, idToken);
@@ -708,6 +817,10 @@ export async function updateAccountApprovalAuthenticated(
     currentDocument: { updateTime: userDocument.updateTime },
   }], idToken);
   return user;
+}
+
+export async function deleteUserProfileAuthenticated(uid: string, idToken: string): Promise<void> {
+  await deleteAuthenticatedDocument("users", uid, idToken);
 }
 
 export async function getAllBoutiqueApplicationsAuthenticated(idToken: string): Promise<BoutiqueApplication[]> {
@@ -725,7 +838,7 @@ export async function updateBoutiqueVerificationAuthenticated(
   boutiqueUpdates: Partial<Boutique>,
   applicationUpdates: Partial<BoutiqueApplication>,
   idToken: string,
-  ownerUpdates?: Pick<UserProfile, 'accountStatus' | 'approvalReviewedAt' | 'approvalRejectionReason'>,
+  ownerUpdates?: Partial<Pick<UserProfile, 'accountStatus' | 'approvalReviewedAt' | 'approvalRejectionReason'>>,
 ): Promise<void> {
   const [boutiqueDocument, applicationDocument] = await Promise.all([
     getAuthenticatedRawDocument("boutiques", boutiqueId, idToken),
@@ -789,7 +902,52 @@ export async function getReservationsForClientAuthenticated(
 }
 
 export async function saveOrderAuthenticated(order: ManualOrder, idToken: string): Promise<void> {
-  await writeAuthenticatedDocument("orders", order.id, order as unknown as Record<string, any>, idToken);
+  const writes: any[] = [{
+    update: {
+      name: firestoreDocumentName("orders", order.id),
+      fields: firestoreFieldsFromObject(order as unknown as Record<string, any>),
+    },
+    currentDocument: { exists: false },
+  }];
+
+  if (order.status === "livre" && order.productId && order.boutiqueId) {
+    const productDocument = await getAuthenticatedRawDocument("products", order.productId, idToken);
+    if (!productDocument) {
+      const error: any = new Error("Le produit associé à cette commande est introuvable.");
+      error.status = 409;
+      throw error;
+    }
+    const product = objectFromFirestoreDocument<Product>(productDocument);
+    if (product.boutiqueId !== order.boutiqueId) {
+      const error: any = new Error("La commande et le produit n’appartiennent pas à la même boutique.");
+      error.status = 403;
+      throw error;
+    }
+    let stockChange: ReturnType<typeof calculateDeliveredStock>;
+    try {
+      stockChange = calculateDeliveredStock("en_attente", "livre", product.stock, order.quantity);
+    } catch {
+      const error: any = new Error("Stock insuffisant pour enregistrer cette commande livrée.");
+      error.status = 409;
+      throw error;
+    }
+    if (stockChange.changed) {
+      writes.push({
+        update: {
+          name: firestoreDocumentName("products", order.productId),
+          fields: firestoreFieldsFromObject({
+            ...product,
+            stock: stockChange.remainingStock,
+            isAvailable: stockChange.isAvailable,
+            updatedAt: new Date().toISOString(),
+          }),
+        },
+        currentDocument: { updateTime: productDocument.updateTime },
+      });
+    }
+  }
+
+  await commitAuthenticatedWrites(writes, idToken);
 }
 
 export async function saveReservationAuthenticated(
@@ -825,6 +983,11 @@ export async function updateOrderAuthenticated(
   const current = currentDocument ? objectFromFirestoreDocument<ManualOrder>(currentDocument) : null;
   if (!current || current.boutiqueId !== boutiqueId) throw new Error("Order not found");
   const order = { ...current, ...updates, id: orderId, boutiqueId: current.boutiqueId };
+  if (!isOrderStatusTransitionAllowed(current.status, order.status)) {
+    const error: any = new Error("Une commande livrée ne peut pas revenir à un statut antérieur.");
+    error.status = 409;
+    throw error;
+  }
 
   const writes: any[] = [{
     update: {
@@ -850,19 +1013,23 @@ export async function updateOrderAuthenticated(
       throw error;
     }
 
-    const quantity = Math.max(1, Math.floor(Number(current.quantity) || 1));
-    const currentStock = Number.isFinite(product.stock) ? Math.max(0, Number(product.stock)) : 1;
-    if (currentStock < quantity) {
+    let stockChange: ReturnType<typeof calculateDeliveredStock>;
+    try {
+      stockChange = calculateDeliveredStock(current.status, order.status, product.stock, current.quantity);
+    } catch (stockError) {
       const error: any = new Error("Stock insuffisant pour marquer cette commande comme livrée.");
       error.status = 409;
       throw error;
     }
-
-    const remainingStock = currentStock - quantity;
+    if (!stockChange.changed) {
+      const error: any = new Error("La transition de stock demandée est invalide.");
+      error.status = 409;
+      throw error;
+    }
     const updatedProduct: Product = {
       ...product,
-      stock: remainingStock,
-      isAvailable: remainingStock > 0,
+      stock: stockChange.remainingStock,
+      isAvailable: stockChange.isAvailable,
       updatedAt: new Date().toISOString(),
     };
     writes.push({
@@ -885,6 +1052,11 @@ export async function deleteOrderAuthenticated(
 ): Promise<void> {
   const current = await getAuthenticatedDocument<ManualOrder>("orders", orderId, idToken);
   if (!current || current.boutiqueId !== boutiqueId) throw new Error("Order not found");
+  if (current.status === "livre") {
+    const error: any = new Error("Une commande livrée ne peut pas être supprimée afin de préserver le stock et l’historique.");
+    error.status = 409;
+    throw error;
+  }
   await deleteAuthenticatedDocument("orders", orderId, idToken);
 }
 

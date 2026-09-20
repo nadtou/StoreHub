@@ -12,7 +12,7 @@ import { compressImageToWebP } from '../utils/imageCompression';
 
 interface AddProductProps {
   onBack: () => void;
-  onSuccess: (newProduct: Partial<Product>) => void;
+  onSuccess: (newProduct: Partial<Product>) => void | Promise<void>;
   initialProduct?: Product | null;
 }
 
@@ -273,6 +273,8 @@ export default function AddProduct({ onBack, onSuccess, initialProduct = null }:
   const [stock, setStock] = useState(String(initialProduct?.stock ?? 10));
   const [sku, setSku] = useState(initialProduct?.sku ?? '');
   const [alertLowStock, setAlertLowStock] = useState(initialProduct?.alertLowStock ?? false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [lowStockThreshold, setLowStockThreshold] = useState(String(initialProduct?.lowStockThreshold ?? 5));
 
   // Custom specifications arrays
@@ -455,10 +457,10 @@ export default function AddProduct({ onBack, onSuccess, initialProduct = null }:
     setUploadedMedia(prev => prev.filter((_, i) => i !== indexToRemove));
   };
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    if (isShoeProduct && shoeSizeError) return;
+    if (isSubmitting || (isShoeProduct && shoeSizeError)) return;
 
     // Map uploaded media URLs or fallback if none uploaded
     const finalImages = uploadedMedia.length > 0
@@ -500,7 +502,15 @@ export default function AddProduct({ onBack, onSuccess, initialProduct = null }:
       stats: initialProduct?.stats ?? { views: 0, favorites: 0, clicks: 0 }
     };
 
-    onSuccess(productDraft);
+    setIsSubmitting(true);
+    setSubmitError('');
+    try {
+      await onSuccess(productDraft);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "L’article n’a pas pu être enregistré.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const categoryOptions = [
@@ -1409,14 +1419,16 @@ export default function AddProduct({ onBack, onSuccess, initialProduct = null }:
 
       {/* Final action stays in the document flow so it is reached by scrolling. */}
       <footer className="w-full min-h-24 border-t border-[#E3DDD0] bg-[#F4EFE6] px-6 py-6 flex items-center justify-end select-none">
-        <div className="relative group">
+        <div className="relative group flex flex-col items-end gap-2">
+          {submitError && <p role="alert" className="max-w-sm text-right text-xs font-medium text-red-700">{submitError}</p>}
           <div className="absolute -inset-1 bg-gradient-to-r from-[#C29D38] via-[#E5C158] to-[#C29D38] rounded-xl blur-lg opacity-30 group-hover:opacity-75 transition-all duration-500" />
           <button
             type="button"
-            onClick={() => handleSubmit()}
-            className="relative cursor-pointer bg-gradient-to-r from-[#DAB24B] via-[#FBE395] to-[#C09A34] text-[#111111] font-bold text-[10px] tracking-widest uppercase py-3.5 px-8 rounded-xl shadow-[0_8px_20px_rgba(197,168,80,0.3)] border-t border-[#FFF6D1]/40 border-r border-b border-[#8C6B1C]/30 flex items-center justify-center transition-all duration-300 min-w-[130px]"
+            onClick={() => void handleSubmit()}
+            disabled={isSubmitting}
+            className="relative cursor-pointer bg-gradient-to-r from-[#DAB24B] via-[#FBE395] to-[#C09A34] text-[#111111] font-bold text-[10px] tracking-widest uppercase py-3.5 px-8 rounded-xl shadow-[0_8px_20px_rgba(197,168,80,0.3)] border-t border-[#FFF6D1]/40 border-r border-b border-[#8C6B1C]/30 flex items-center justify-center transition-all duration-300 min-w-[130px] disabled:cursor-wait disabled:opacity-60"
           >
-            <span>{isEditing ? 'Enregistrer les modifications' : 'Publier'}</span>
+            <span>{isSubmitting ? 'Enregistrement…' : isEditing ? 'Enregistrer les modifications' : 'Publier'}</span>
           </button>
         </div>
       </footer>

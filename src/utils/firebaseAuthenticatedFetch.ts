@@ -1,5 +1,7 @@
 import { initFirebase } from "../firebase";
 import { onAuthStateChanged, type Auth, type User } from "firebase/auth";
+import { getToken } from 'firebase/app-check';
+import { resolveStoreHubApiUrl } from '../config/runtimeUrls';
 
 export class FirebaseAuthRequiredError extends Error {
   constructor() {
@@ -26,7 +28,24 @@ function waitForFirebaseAuth(auth: Auth): Promise<User | null> {
   });
 }
 
-/** Attach a fresh Firebase ID token to private API requests. */
+async function withAppCheckHeader(headers: Headers): Promise<void> {
+  const { appCheck } = await initFirebase();
+  if (!appCheck) return;
+  const tokenResult = await getToken(appCheck, false);
+  headers.set('X-Firebase-AppCheck', tokenResult.token);
+}
+
+/** Attach an App Check token to public custom API requests when configured. */
+export async function firebaseAppCheckFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  await withAppCheckHeader(headers);
+  return fetch(resolveStoreHubApiUrl(input), { ...init, headers });
+}
+
+/** Attach fresh Firebase Auth and App Check tokens to private API requests. */
 export async function firebaseAuthenticatedFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -38,6 +57,7 @@ export async function firebaseAuthenticatedFetch(
   const idToken = await firebaseUser.getIdToken();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${idToken}`);
+  await withAppCheckHeader(headers);
 
-  return fetch(input, { ...init, headers });
+  return fetch(resolveStoreHubApiUrl(input), { ...init, headers });
 }

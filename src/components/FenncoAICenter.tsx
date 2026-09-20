@@ -3,6 +3,7 @@ import { Product, Boutique } from '../types';
 import FennecMascot from './FennecMascot';
 import FennecFaceIcon from './FennecFaceIcon';
 import { Send, X, Sparkles } from 'lucide-react';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface FenncoAICenterProps {
   isOpen: boolean;
@@ -57,7 +58,7 @@ export default function FenncoAICenter({ isOpen, onClose, boutique, products }: 
     setIsTyping(true);
 
     try {
-      const res = await fetch('/api/fennco-ai', {
+      const res = await firebaseAppCheckFetch('/api/fennco-ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -25,7 +25,8 @@ import { initFirebase, uploadBoutiqueCover, uploadBoutiqueLogo, uploadClientAvat
 import { onAuthStateChanged, sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { ensureRequiredClothingSizes } from './utils/productSizes';
 import { getStableChatUserId, getUserBoutique } from './utils/chatIdentity';
-import { FirebaseAuthRequiredError, firebaseAuthenticatedFetch } from './utils/firebaseAuthenticatedFetch';
+import { FirebaseAuthRequiredError, firebaseAppCheckFetch, firebaseAuthenticatedFetch } from './utils/firebaseAuthenticatedFetch';
+import { getAccountBlockingMessage, normalizedAccountStatus } from './utils/accountAccess';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
@@ -149,6 +150,12 @@ export default function App() {
   const [messagerieTab, setMessagerieTab] = useState<'messages' | 'orders'>('messages');
   const [showQuickAddMenu, setShowQuickAddMenu] = useState(false);
   const [activeChat, setActiveChat] = useState<{ chatId: string; boutique: Boutique; client: any } | null>(null);
+  const [pendingProductContext, setPendingProductContext] = useState<{
+    productId: string;
+    productName: string;
+    productImage: string;
+    productPrice: string;
+  } | null>(null);
   const [orderNotification, setOrderNotification] = useState<{ order: ManualOrder; count: number } | null>(null);
   const quickAddMenuRef = useRef<HTMLDivElement>(null);
   const orderMonitorRef = useRef<{ boutiqueId: string; latestCreatedAt: number } | null>(null);
@@ -184,6 +191,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [followedBoutiqueIds, setFollowedBoutiqueIds] = useState<string[]>([]);
   const [followedBoutiquesLoading, setFollowedBoutiquesLoading] = useState(false);
+  const catalogSessionKey = user?.uid ?? 'anonymous';
 
   useEffect(() => {
     let cancelled = false;
@@ -224,8 +232,8 @@ export default function App() {
     const fetchLiveData = async () => {
       try {
         const [resB, resP] = await Promise.all([
-          fetch('/api/boutiques'),
-          fetch('/api/products')
+          firebaseAppCheckFetch('/api/boutiques'),
+          firebaseAppCheckFetch('/api/products')
         ]);
         if (resB.ok) {
           const liveBoutiques = await resB.json();
@@ -240,7 +248,7 @@ export default function App() {
       }
     };
     fetchLiveData();
-  }, []);
+  }, [catalogSessionKey]);
 
   // Real-time private chat unread count tracking
   const [unreadCount, setUnreadCount] = useState(0);
@@ -397,7 +405,7 @@ export default function App() {
             const response = await firebaseAuthenticatedFetch('/api/users/profile');
             if (!response.ok) throw new Error('Stored Firebase profile could not be verified');
             const liveProfile = await response.json();
-            const liveStatus = liveProfile.accountStatus || (liveProfile.role === UserRole.ADMIN ? 'approved' : 'pending');
+            const liveStatus = normalizedAccountStatus(liveProfile);
             if (liveProfile.role !== UserRole.ADMIN && liveStatus !== 'approved') {
               await signOut(auth);
               setUser(null);
@@ -502,13 +510,9 @@ export default function App() {
       throw error;
     }
 
-    const accountStatus = profile.accountStatus || (profile.role === UserRole.ADMIN ? 'approved' : 'pending');
+    const accountStatus = normalizedAccountStatus(profile);
     if (profile.role !== UserRole.ADMIN && accountStatus !== 'approved') {
-      const message = accountStatus === 'pending'
-        ? "Votre compte est en attente de confirmation par l’administration."
-        : accountStatus === 'rejected'
-          ? `Votre demande d’ouverture a été refusée${profile.approvalRejectionReason ? ` : ${profile.approvalRejectionReason}` : '.'}`
-          : "Votre compte est suspendu. Contactez l’administration.";
+      const message = getAccountBlockingMessage(profile) || "Ce compte ne peut pas accéder à l’application.";
       try {
         const { auth } = await initFirebase();
         await signOut(auth);
@@ -807,6 +811,10 @@ export default function App() {
       sizes: ensureRequiredClothingSizes(draft.sizes || ['M'], productCategory),
       shoeSizeMin: draft.shoeSizeMin,
       shoeSizeMax: draft.shoeSizeMax,
+      stock: Math.max(0, Math.floor(Number(draft.stock) || 0)),
+      sku: draft.sku,
+      alertLowStock: draft.alertLowStock,
+      lowStockThreshold: draft.lowStockThreshold,
       materials: draft.materials || ['Soie'],
       tags: ['nouveau'],
       stats: { views: 0, favorites: 0, clicks: 0 },
@@ -823,20 +831,18 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(completedProduct)
       });
-      if (response.ok) {
-        console.log("Successfully saved product to Firestore database!");
-      } else {
-        console.error("Failed to save product to Firestore database API.");
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.product) {
+        throw new Error(payload?.error || "L’article n’a pas pu être enregistré.");
       }
+      setProducts(prev => [payload.product as Product, ...prev]);
+      setIsAddingProduct(false);
+      setEditingProduct(null);
+      setCurrentView('dashboard');
     } catch (err) {
       console.error("Network error while saving product to Firestore:", err);
+      throw err;
     }
-
-    // Update frontend products list instantly for seamless UX
-    setProducts(prev => [completedProduct, ...prev]);
-    setIsAddingProduct(false);
-    setEditingProduct(null);
-    setCurrentView('dashboard');
   };
 
   const handleEditProductSuccess = async (draft: Partial<Product>) => {
@@ -876,16 +882,19 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedProduct),
       });
-      if (!response.ok) throw new Error('Product update could not be saved');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.product) throw new Error(payload?.error || 'Product update could not be saved');
+      const savedProduct = payload.product as Product;
 
       setProducts((currentProducts) => currentProducts.map((product) => (
-        product.id === updatedProduct.id ? updatedProduct : product
+        product.id === savedProduct.id ? savedProduct : product
       )));
       setEditingProduct(null);
       setIsAddingProduct(false);
       setCurrentView('dashboard');
     } catch (error) {
       console.error('Error updating product:', error);
+      throw error;
     }
   };
 
@@ -911,7 +920,12 @@ export default function App() {
           currentUser={user}
           boutique={activeChat.boutique}
           client={activeChat.client}
-          onBack={() => setActiveChat(null)}
+          onBack={() => {
+            setActiveChat(null);
+            setPendingProductContext(null);
+          }}
+          initialProductContext={pendingProductContext}
+          onProductContextConsumed={() => setPendingProductContext(null)}
         />
       );
     }
@@ -931,6 +945,33 @@ export default function App() {
               toggleFavorite={toggleFavorite}
               shouldTrackView={user.role === UserRole.CLIENT || user.role === UserRole.GUEST}
               onReserve={(selection) => handleReserveProduct(selectedProduct, selection)}
+              canContactBoutique={user.role === UserRole.CLIENT}
+              onContactBoutique={(product) => {
+                if (user.role !== UserRole.CLIENT) return;
+                const clientId = getStableChatUserId(user);
+                if (!clientId) return;
+                const targetBoutique = boutiques.find((b) => b.id === product.boutiqueId);
+                if (!targetBoutique) return;
+                const clientName = user.displayName || user.email.split('@')[0];
+                const clientPhoto = user.photoURL || "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80";
+                setPendingProductContext({
+                  productId: product.id,
+                  productName: product.name,
+                  productImage: product.images[0]?.url || '',
+                  productPrice: `${product.price} DA`,
+                });
+                setActiveChat({
+                  chatId: `${clientId}_${targetBoutique.id}`,
+                  boutique: targetBoutique,
+                  client: {
+                    uid: clientId,
+                    displayName: clientName,
+                    photoURL: clientPhoto,
+                    email: user.email,
+                  },
+                });
+                setSelectedProduct(null);
+              }}
             />
           ) : selectedBoutique ? (
             <BoutiqueDetail
@@ -1068,6 +1109,12 @@ export default function App() {
                   onEditProductClick={handleEditProductClick}
                   onProductClick={(p) => setSelectedProduct(p)}
                   onOrdersClick={openOrders}
+                  onOpenStorefront={handleOpenOwnBoutique}
+                  onOpenSettings={() => {
+                    setCurrentView('profile');
+                    setSelectedBoutique(null);
+                    setSelectedProduct(null);
+                  }}
                   onOpenQA={() => setShowQAModal(true)}
                 />
                 ) : (

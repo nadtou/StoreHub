@@ -3,6 +3,7 @@ import { Boutique, Product, Collection } from '../types';
 import { Heart, Instagram, Facebook, Music2, Globe, MapPin, ArrowLeft, CheckCircle2, UserPlus, Users, FolderHeart, Calendar, MessageSquare, Check, Plus, Camera, LoaderCircle } from 'lucide-react';
 import { BoutiqueProductFilters, productMatchesCategory, productMatchesGenre } from './bb_template';
 import { compressImageToWebP } from '../utils/imageCompression';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface BoutiqueDetailProps {
   boutique: Boutique;
@@ -80,7 +81,7 @@ export default function BoutiqueDetail({
   useEffect(() => {
     const fetchLiveProducts = async () => {
       try {
-        const res = await fetch('/api/products');
+        const res = await firebaseAppCheckFetch('/api/products');
         if (res.ok) {
           const liveProducts = await res.json();
           setProducts(Array.isArray(liveProducts) ? liveProducts : []);
@@ -98,7 +99,7 @@ export default function BoutiqueDetail({
     if (sessionStorage.getItem(sessionKey)) return;
     sessionStorage.setItem(sessionKey, '1');
 
-    fetch(`/api/analytics/boutiques/${boutique.id}/view`, { method: 'POST' })
+    firebaseAppCheckFetch(`/api/analytics/boutiques/${boutique.id}/view`, { method: 'POST' })
       .catch((error) => console.error('Error tracking boutique view:', error));
   }, [boutique.id, shouldTrackView]);
 

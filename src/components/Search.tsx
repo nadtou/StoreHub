@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Product } from '../types';
 import { Search as SearchIcon, Camera, SlidersHorizontal, Eye, Compass, RefreshCw, X, Sparkles, Heart, RotateCcw } from 'lucide-react';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface SearchProps {
   onProductClick: (product: Product) => void;
@@ -26,7 +27,7 @@ export default function Search({ onProductClick, favorites, toggleFavorite }: Se
   React.useEffect(() => {
     const fetchLiveProducts = async () => {
       try {
-        const res = await fetch('/api/products');
+        const res = await firebaseAppCheckFetch('/api/products');
         if (res.ok) {
           const liveProducts = await res.json();
           setProducts(Array.isArray(liveProducts) ? liveProducts : []);
@@ -164,7 +165,7 @@ export default function Search({ onProductClick, favorites, toggleFavorite }: Se
     setApiError(null);
 
     try {
-      const response = await fetch('/api/visual-search', {
+      const response = await firebaseAppCheckFetch('/api/visual-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageBase64: base64Img })

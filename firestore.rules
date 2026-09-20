@@ -15,8 +15,17 @@ service cloud.firestore {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && (
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin"
-          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == "approved"
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "client"
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == "approved"
+          )
+          || (
+            request.auth.token.email_verified == true
+            && (
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin"
+              || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus == "approved"
+            )
+          )
         );
     }
 
@@ -116,6 +125,11 @@ service cloud.firestore {
           (
             request.resource.data.role == "client"
             && request.resource.data.accountStatus == "approved"
+            && request.resource.data.identityVerificationStatus == "pending"
+            && request.resource.data.identityDocumentName is string
+            && request.resource.data.identityDocumentPath.matches(
+              "client-identity/" + request.auth.uid + "/identity-[0-9]+\\.(pdf|jpg|png|webp)"
+            )
           )
           || (
             request.resource.data.accountStatus == "pending"
@@ -138,7 +152,7 @@ service cloud.firestore {
             "followedBoutiqueIds", "favoriteProductIds"
           ])
         ) || isAdmin();
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     // Private legal application. Unlike the public boutique document, this
@@ -235,7 +249,8 @@ service cloud.firestore {
         && request.resource.data.status == "resolved"
         && request.resource.data.updatedAt is string
         && request.resource.data.resolvedAt is string;
-      allow delete: if false;
+      // Required for the administrator's permanent boutique deletion flow.
+      allow delete: if isAdmin();
     }
 
     function ownsMessageBoutique(data) {
@@ -247,6 +262,13 @@ service cloud.firestore {
         && (data.clientId == request.auth.uid || ownsMessageBoutique(data));
     }
 
+    function validProductContextField(data) {
+      return !("productContext" in data)
+        || (data.productContext is string
+            && data.productContext.size() > 0
+            && data.productContext.size() <= 2000);
+    }
+
     function validNewMessage(data) {
       return data.keys().hasAll([
           "id", "chatId", "clientId", "clientName", "clientPhoto",
@@ -256,7 +278,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           "id", "chatId", "clientId", "clientName", "clientPhoto",
           "boutiqueId", "boutiqueOwnerId", "boutiqueName", "boutiqueLogo", "senderId",
-          "senderName", "senderRole", "text", "createdAt"
+          "senderName", "senderRole", "text", "createdAt", "productContext"
         ])
         && data.id is string
         && data.chatId is string
@@ -269,6 +291,7 @@ service cloud.firestore {
         && data.createdAt is string
         && data.text.size() > 0
         && data.text.size() <= 4000
+        && validProductContextField(data)
         && data.chatId == data.clientId + "_" + data.boutiqueId
         && exists(/databases/$(database)/documents/boutiques/$(data.boutiqueId))
         && data.boutiqueOwnerId == get(/databases/$(database)/documents/boutiques/$(data.boutiqueId)).data.ownerId
@@ -289,7 +312,9 @@ service cloud.firestore {
         && isApprovedAccount()
         && chatMessageId == request.resource.data.id
         && validNewMessage(request.resource.data);
-      allow update, delete: if false;
+      allow update: if false;
+      // Only an administrator may remove messages as part of a deleted shop.
+      allow delete: if isAdmin();
     }
 
     match /{document=**} {

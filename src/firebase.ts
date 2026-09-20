@@ -1,4 +1,9 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+import {
+  AppCheck,
+  initializeAppCheck,
+  ReCaptchaEnterpriseProvider,
+} from "firebase/app-check";
 import { 
   getAuth, 
   Auth, 
@@ -23,9 +28,11 @@ import {
   FirebaseStorage
 } from "firebase/storage";
 import type { ProductImage } from './types';
+import { resolveStoreHubApiUrl } from './config/runtimeUrls';
 
 const MAX_FIREBASE_IMAGE_BYTES = 1024 * 1024;
 const MAX_BOUTIQUE_DOCUMENT_BYTES = 5 * 1024 * 1024;
+const MAX_CLIENT_IDENTITY_DOCUMENT_BYTES = 5 * 1024 * 1024;
 
 export interface UploadedStorageFile {
   fullPath: string;
@@ -51,15 +58,24 @@ let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
 let storage: FirebaseStorage | null = null;
+let appCheck: AppCheck | null = null;
 
-let initPromise: Promise<{ auth: Auth; db: Firestore; storage: FirebaseStorage }> | null = null;
+export interface StoreHubFirebaseServices {
+  auth: Auth;
+  db: Firestore;
+  storage: FirebaseStorage;
+  appCheck: AppCheck | null;
+}
 
-export function initFirebase(): Promise<{ auth: Auth; db: Firestore; storage: FirebaseStorage }> {
+let initPromise: Promise<StoreHubFirebaseServices> | null = null;
+
+export function initFirebase(): Promise<StoreHubFirebaseServices> {
   if (initPromise) return initPromise;
 
   initPromise = new Promise(async (resolve, reject) => {
     try {
-      const response = await fetch("/api/firebase-config");
+      const firebaseConfigUrl = resolveStoreHubApiUrl("/api/firebase-config");
+      const response = await fetch(firebaseConfigUrl);
       if (!response.ok) {
         throw new Error("Failed to fetch Firebase applet configuration from API");
       }
@@ -74,9 +90,21 @@ export function initFirebase(): Promise<{ auth: Auth; db: Firestore; storage: Fi
       // Initialize Firestore specifying the databaseId if present in config
       db = getFirestore(app, firebaseConfig.firestoreDatabaseId || "(default)");
       storage = getStorage(app);
+      const appCheckSiteKey = typeof firebaseConfig.appCheckSiteKey === 'string'
+        ? firebaseConfig.appCheckSiteKey.trim()
+        : '';
+      if (appCheckSiteKey && !appCheck) {
+        if (firebaseConfig.appCheckDebugEnabled === true && window.location.hostname === 'localhost') {
+          (self as typeof self & { FIREBASE_APPCHECK_DEBUG_TOKEN?: boolean }).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+        }
+        appCheck = initializeAppCheck(app, {
+          provider: new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+          isTokenAutoRefreshEnabled: true,
+        });
+      }
       
       console.log("Firebase initialized successfully on the client side.");
-      resolve({ auth, db, storage });
+      resolve({ auth, db, storage, appCheck });
     } catch (error) {
       console.error("Client-side Firebase initialization failed:", error);
       reject(error);
@@ -204,9 +232,41 @@ export async function deleteUploadedStorageFile(fullPath: string): Promise<void>
   await deleteObject(storageRef(firebaseStorage, normalizedPath));
 }
 
+export async function uploadClientIdentityDocument(
+  userId: string,
+  file: File,
+): Promise<UploadedStorageFile> {
+  if (file.size <= 0 || file.size > MAX_CLIENT_IDENTITY_DOCUMENT_BYTES) {
+    throw new Error('La pièce d’identité doit peser au maximum 5 Mo.');
+  }
+
+  const extension = getVerificationDocumentExtension(file);
+  const { storage: firebaseStorage } = await initFirebase();
+  const documentRef = storageRef(
+    firebaseStorage,
+    `client-identity/${userId}/identity-${Date.now()}.${extension}`,
+  );
+  const snapshot = await uploadBytes(documentRef, file, {
+    contentType: file.type,
+    cacheControl: 'private,max-age=0,no-store',
+    contentDisposition: 'attachment',
+    customMetadata: {
+      userId,
+      documentType: 'client-identity',
+    },
+  });
+
+  return {
+    fullPath: snapshot.ref.fullPath,
+    name: file.name.slice(0, 180),
+    contentType: file.type,
+    size: file.size,
+  };
+}
+
 export async function getSecureStorageFileUrl(fullPath: string): Promise<string> {
   const normalizedPath = fullPath.trim();
-  if (!normalizedPath.startsWith('boutique-verification/')) {
+  if (!normalizedPath.startsWith('boutique-verification/') && !normalizedPath.startsWith('client-identity/')) {
     throw new Error('Chemin du document de vérification invalide.');
   }
   const { storage: firebaseStorage } = await initFirebase();

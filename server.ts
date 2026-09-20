@@ -4,8 +4,10 @@ import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
 import { randomUUID } from "node:crypto";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { getApp as getAdminApp, getApps as getAdminApps, initializeApp as initializeAdminApp } from 'firebase-admin/app';
+import { getAppCheck as getAdminAppCheck } from 'firebase-admin/app-check';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { 
   getBoutiques, 
   getBoutiqueById,
@@ -38,26 +40,93 @@ import {
   getAllBoutiqueApplicationsAuthenticated,
   updateBoutiqueVerificationAuthenticated,
   updateAccountApprovalAuthenticated,
+  deleteUserProfileAuthenticated,
   getModerationNotesForBoutiqueAuthenticated,
   saveModerationNoteAuthenticated,
   updateModerationNoteStatusAuthenticated,
 } from "./src/server/db";
 import { AccountApprovalStatus, Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteSeverity, UserProfile, UserRole } from "./src/types";
 import {
-  ALL_SHOE_SIZES,
-  ensureRequiredClothingSizes,
-  generateShoeSizes,
-  getShoeSizeError,
-  isShoeCategory,
-} from "./src/utils/productSizes";
+  calculateDeliveredStock,
+  getReservationSelectionError,
+  normalizeProductForPersistence,
+} from "./src/utils/commerceRules";
+import { getAccountBlockingMessage, normalizedAccountStatus } from "./src/utils/accountAccess";
+import { getChatAccessError } from "./src/utils/chatAccess";
+import { buildBoutiqueAdminTransition } from "./src/utils/adminTransitions";
+import { prepareBoutiqueRegistration } from "./src/utils/boutiqueRegistration";
+import { decideAppCheckAccess, parseAppCheckMode } from './src/utils/appCheckPolicy';
+import { isStoreHubOriginAllowed, parseAllowedOrigins } from './src/utils/corsPolicy';
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
-app.use(cors());
+const allowedOrigins = parseAllowedOrigins(process.env.STOREHUB_ALLOWED_ORIGINS);
+app.use(cors({
+  origin(origin, callback) {
+    if (isStoreHubOriginAllowed(origin, allowedOrigins)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error(`Origine non autorisée : ${origin}`));
+  },
+}));
 app.use(express.json({ limit: '10mb' }));
+
+const appCheckMode = parseAppCheckMode(process.env.STOREHUB_APP_CHECK_MODE);
+let appCheckWarningCount = 0;
+
+function readFirebaseProjectId(): string {
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  if (typeof config.projectId !== 'string' || !config.projectId.trim()) {
+    throw new Error('Le projectId Firebase est absent de la configuration.');
+  }
+  return config.projectId.trim();
+}
+
+async function verifyAppCheckToken(token: string): Promise<void> {
+  const adminApp = getAdminApps().length > 0
+    ? getAdminApp()
+    : initializeAdminApp({ projectId: readFirebaseProjectId() });
+  await getAdminAppCheck(adminApp).verifyToken(token);
+}
+
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/health' || req.path === '/firebase-config' || appCheckMode === 'off') {
+    next();
+    return;
+  }
+
+  const token = req.header('X-Firebase-AppCheck')?.trim();
+  let state: 'valid' | 'missing' | 'invalid' = token ? 'valid' : 'missing';
+  if (token) {
+    try {
+      await verifyAppCheckToken(token);
+    } catch {
+      state = 'invalid';
+    }
+  }
+
+  const decision = decideAppCheckAccess(appCheckMode, state);
+  if (decision.shouldLog) {
+    appCheckWarningCount += 1;
+    if (appCheckWarningCount <= 10 || appCheckWarningCount % 100 === 0) {
+      console.warn(`[App Check:${appCheckMode}] ${state} ${req.method} ${req.originalUrl}`);
+    }
+  }
+  if (!decision.allow) {
+    res.status(decision.statusCode || 403).json({
+      error: state === 'missing'
+        ? 'Une attestation App Check est requise.'
+        : 'L’attestation App Check est invalide.',
+    });
+    return;
+  }
+  next();
+});
 
 // Serve the assets directory from the root
 app.use("/assets", express.static(path.join(process.cwd(), "assets")));
@@ -88,7 +157,11 @@ function getGeminiClient() {
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    time: new Date().toISOString(),
+    appCheck: { mode: appCheckMode, warnings: appCheckWarningCount },
+  });
 });
 
 // GET firebase config for the client
@@ -97,7 +170,11 @@ app.get("/api/firebase-config", (req, res) => {
     const configPath = path.join(process.cwd(), "firebase-applet-config.json");
     if (fs.existsSync(configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-      res.json(config);
+      res.json({
+        ...config,
+        appCheckSiteKey: process.env.FIREBASE_APP_CHECK_SITE_KEY || '',
+        appCheckDebugEnabled: process.env.FIREBASE_APP_CHECK_DEBUG === 'true',
+      });
     } else {
       res.status(404).json({ error: "Firebase applet config not found" });
     }
@@ -289,26 +366,12 @@ app.post("/api/products", async (req, res) => {
       return res.status(400).json({ error: "Les images temporaires doivent être envoyées dans Firebase Storage avant l’enregistrement." });
     }
 
-    let normalizedSizes = ensureRequiredClothingSizes(product.sizes, product.category);
-    if (isShoeCategory(product.category)) {
-      const shoeSizeMin = Number(product.shoeSizeMin);
-      const shoeSizeMax = Number(product.shoeSizeMax);
-      const shoeSizeError = getShoeSizeError(shoeSizeMin, shoeSizeMax);
-      if (shoeSizeError) {
-        return res.status(400).json({ error: shoeSizeError });
-      }
-      normalizedSizes = generateShoeSizes(shoeSizeMin, shoeSizeMax);
-      product.shoeSizeMin = shoeSizeMin;
-      product.shoeSizeMax = shoeSizeMax;
-    }
-
     await assertBoutiqueOwner(product.boutiqueId, idToken);
+    const normalized = normalizeProductForPersistence(product);
+    if ('error' in normalized) return res.status(400).json({ error: normalized.error });
     const normalizedProduct = {
       ...product,
-      sizes: normalizedSizes,
-      stock: Math.max(0, Math.floor(Number(product.stock) || 0)),
-      isAvailable: Boolean(product.isAvailable) && Number(product.stock) > 0,
-      currency: "DZD",
+      ...normalized.product,
     };
     await saveProductAuthenticated(normalizedProduct, idToken);
     res.status(201).json({ message: "Product created successfully", product: normalizedProduct });
@@ -330,13 +393,11 @@ app.put("/api/products/:id", async (req, res) => {
     if (hasTemporaryProductImage(req.body?.images)) {
       return res.status(400).json({ error: "Les images temporaires doivent être envoyées dans Firebase Storage avant l’enregistrement." });
     }
-    const updates = { ...(req.body || {}), boutiqueId: currentProduct.boutiqueId, currency: "DZD" };
-    if (req.body?.stock !== undefined) {
-      updates.stock = Math.max(0, Math.floor(Number(req.body.stock) || 0));
-      if (updates.stock === 0) updates.isAvailable = false;
-    }
-    await updateProductAuthenticated(id, updates, idToken);
-    res.json({ message: "Product updated successfully", id, updates });
+    const normalized = normalizeProductForPersistence(req.body || {}, currentProduct);
+    if ('error' in normalized) return res.status(400).json({ error: normalized.error });
+    const updates = { ...normalized.product, boutiqueId: currentProduct.boutiqueId };
+    const updatedProduct = await updateProductAuthenticated(id, updates, idToken);
+    res.json({ message: "Product updated successfully", id, updates, product: updatedProduct });
   } catch (error: any) {
     console.error("Error updating product:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to update product" });
@@ -415,9 +476,18 @@ app.post("/api/orders", async (req, res) => {
     if (!order?.id || !order?.boutiqueId || !order?.clientName) {
       return res.status(400).json({ error: "Invalid order data" });
     }
+    if (!["en_attente", "en_cours", "livre"].includes(order.status)) {
+      return res.status(400).json({ error: "Statut de commande invalide." });
+    }
     await assertBoutiqueOwner(order.boutiqueId, idToken);
-    await saveOrderAuthenticated({ ...order, source: order.source || "manual" }, idToken);
-    res.status(201).json(order);
+    const normalizedOrder: ManualOrder = {
+      ...order,
+      clientName: order.clientName.trim().slice(0, 100),
+      quantity: Math.max(1, Math.floor(Number(order.quantity) || 1)),
+      source: "manual",
+    };
+    await saveOrderAuthenticated(normalizedOrder, idToken);
+    res.status(201).json(normalizedOrder);
   } catch (error: any) {
     console.error("Error saving order:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to save order" });
@@ -443,22 +513,14 @@ app.post("/api/reservations", async (req, res) => {
 
     const product = await getProductById(productId);
     if (!product) return res.status(404).json({ error: "Article introuvable." });
-    if (!product.isAvailable) return res.status(409).json({ error: "Cet article n’est plus disponible." });
-
     const boutique = await getBoutiqueById(product.boutiqueId);
     if (!boutique) return res.status(404).json({ error: "Boutique introuvable." });
-
-    const configuredSizes = isShoeCategory(product.category)
-      ? (product.shoeSizeMin !== undefined && product.shoeSizeMax !== undefined
-        ? generateShoeSizes(product.shoeSizeMin, product.shoeSizeMax)
-        : product.sizes)
-      : ensureRequiredClothingSizes(product.sizes, product.category);
-    const allowedSizes = configuredSizes.length > 0
-      ? configuredSizes
-      : (isShoeCategory(product.category) ? ALL_SHOE_SIZES : ["Taille unique"]);
-    const allowedColors = product.colors.length > 0 ? product.colors : ["Standard"];
-    if (!allowedSizes.map(String).includes(selectedSize) || !allowedColors.includes(selectedColor)) {
-      return res.status(400).json({ error: "La taille ou la couleur sélectionnée n’est pas disponible." });
+    if (boutique.isSuspended || boutique.verificationStatus !== "verified" || !boutique.isVerified) {
+      return res.status(409).json({ error: "Cette boutique n’accepte pas de réservation actuellement." });
+    }
+    const selectionError = getReservationSelectionError(product, selectedSize, selectedColor);
+    if (selectionError) {
+      return res.status(selectionError.includes("plus disponible") ? 409 : 400).json({ error: selectionError });
     }
 
     let clientPhoto = "";
@@ -597,6 +659,15 @@ app.post("/api/users/profile", async (req, res) => {
     const cleanStringList = (value: unknown, limit = 20) => Array.isArray(value)
       ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, limit)
       : [];
+    const submittedIdentityPath = typeof body.identityDocumentPath === "string" ? body.identityDocumentPath.trim() : "";
+    const submittedIdentityName = typeof body.identityDocumentName === "string" ? body.identityDocumentName.trim().slice(0, 180) : "";
+    if (!existingProfile && (
+      !submittedIdentityName
+      || !new RegExp(`^client-identity/${account.uid}/identity-[0-9]+\\.(pdf|jpg|png|webp)$`).test(submittedIdentityPath)
+    )) {
+      return res.status(400).json({ error: "Une pièce d’identité valide est obligatoire pour créer le compte client." });
+    }
+    const submittedAt = new Date().toISOString();
 
     const user: UserProfile = {
       uid: account.uid,
@@ -624,6 +695,11 @@ app.post("/api/users/profile", async (req, res) => {
       approvalSubmittedAt: existingProfile ? existingProfile.approvalSubmittedAt : new Date().toISOString(),
       approvalReviewedAt: existingProfile ? existingProfile.approvalReviewedAt : new Date().toISOString(),
       approvalRejectionReason: existingProfile?.approvalRejectionReason,
+      identityDocumentName: existingProfile?.identityDocumentName || submittedIdentityName,
+      identityDocumentPath: existingProfile?.identityDocumentPath || submittedIdentityPath,
+      identityVerificationStatus: existingProfile?.identityVerificationStatus || "pending",
+      identitySubmittedAt: existingProfile?.identitySubmittedAt || submittedAt,
+      identityReviewedAt: existingProfile?.identityReviewedAt,
       createdAt: existingProfile?.createdAt || new Date().toISOString(),
     };
     await saveAuthenticatedUserProfile(user, idToken);
@@ -643,102 +719,15 @@ app.post("/api/boutique-registration", async (req, res) => {
     if (!idToken) return;
 
     const account = await getFirebaseAccountFromIdToken(idToken);
-    const body = req.body || {};
-    const normalizedName = typeof body.name === "string" ? body.name.trim() : "";
-    const requestedBoutiqueId = typeof body.boutiqueId === "string" ? body.boutiqueId.trim() : "";
-    const expectedBoutiqueId = `boutique_${account.uid}`;
-    const logo = typeof body.logo === "string" ? body.logo.trim() : "";
-    const logoStoragePath = typeof body.logoStoragePath === "string" ? body.logoStoragePath.trim() : "";
-    const verificationDocPath = typeof body.verificationDocPath === "string" ? body.verificationDocPath.trim() : "";
-    const verificationDocName = typeof body.verificationDocName === "string"
-      ? body.verificationDocName.replace(/[\\/\u0000-\u001f\u007f]/g, "_").trim().slice(0, 180)
-      : "";
-
-    if (normalizedName.length < 2 || normalizedName.length > 80) {
-      return res.status(400).json({ error: "Le nom de boutique doit contenir entre 2 et 80 caractères." });
-    }
-    if (requestedBoutiqueId !== expectedBoutiqueId) {
-      return res.status(400).json({ error: "Identifiant de boutique invalide." });
-    }
-    if (!verificationDocName) {
-      return res.status(400).json({ error: "Le nom du document de vérification est obligatoire." });
-    }
-
-    const expectedLogoPrefix = `boutique-media/${account.uid}/${expectedBoutiqueId}/logos/`;
-    const expectedDocumentPrefix = `boutique-verification/${account.uid}/${expectedBoutiqueId}/`;
-    if (!logoStoragePath.startsWith(expectedLogoPrefix) || !verificationDocPath.startsWith(expectedDocumentPrefix)) {
-      return res.status(400).json({ error: "Chemin Firebase Storage invalide." });
-    }
-
-    try {
-      const logoUrl = new URL(logo);
-      if (logoUrl.protocol !== "https:" || logoUrl.hostname !== "firebasestorage.googleapis.com") throw new Error();
-      const objectPathMarker = "/o/";
-      const markerIndex = logoUrl.pathname.indexOf(objectPathMarker);
-      if (markerIndex < 0) throw new Error();
-      const encodedObjectPath = logoUrl.pathname.slice(markerIndex + objectPathMarker.length).split("/")[0];
-      if (decodeURIComponent(encodedObjectPath) !== logoStoragePath) throw new Error();
-    } catch {
-      return res.status(400).json({ error: "Le logo doit correspondre au fichier Firebase Storage envoyé par ce compte." });
-    }
+    const prepared = prepareBoutiqueRegistration(account, req.body || {}, new Date().toISOString());
+    if ('error' in prepared) return res.status(400).json({ error: prepared.error });
 
     const existingProfile = await getAuthenticatedUserProfile(account.uid, idToken);
     if (existingProfile) {
       return res.status(409).json({ error: "Ce compte possède déjà un profil ou une boutique." });
     }
 
-    const now = new Date().toISOString();
-    const slugBase = normalizedName
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 60) || "boutique";
-    const slug = `${slugBase}-${account.uid.slice(0, 8).toLowerCase()}`;
-
-    const user: UserProfile = {
-      uid: account.uid,
-      email: account.email,
-      displayName: normalizedName,
-      role: UserRole.BOUTIQUE,
-      photoURL: logo,
-      boutiqueId: expectedBoutiqueId,
-      accountStatus: "pending",
-      approvalSubmittedAt: now,
-      stats: { favoritesCount: 0, viewedProducts: 0 },
-      createdAt: now,
-    };
-    const boutique = {
-      id: expectedBoutiqueId,
-      ownerId: account.uid,
-      name: normalizedName,
-      slug,
-      description: "",
-      logo,
-      coverImage: "/images/default-fashion-cover-v2.png",
-      location: { city: "", country: "Algérie" },
-      categories: [],
-      tags: [],
-      social: {},
-      stats: { productsCount: 0, followersCount: 0, viewsCount: 0 },
-      isVerified: false,
-      isFeatured: false,
-      isSuspended: false,
-      verificationStatus: "pending" as const,
-      verificationSubmittedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const application = {
-      boutiqueId: expectedBoutiqueId,
-      ownerId: account.uid,
-      status: "pending" as const,
-      verificationDocName,
-      verificationDocPath,
-      submittedAt: now,
-    };
-
+    const { user, boutique, application } = prepared;
     await registerBoutiqueAccountAuthenticated(user, boutique, application, idToken);
     res.status(201).json({
       message: "Votre boutique a été créée et envoyée en validation.",
@@ -837,8 +826,22 @@ app.put("/api/admin/users/:uid/approval", async (req, res) => {
 
     const currentUser = await getAuthenticatedUserProfile(uid, idToken);
     if (!currentUser) return res.status(404).json({ error: "Compte introuvable." });
-    if (currentUser.role === UserRole.ADMIN) {
-      return res.status(403).json({ error: "Le statut d’un administrateur ne peut pas être modifié ici." });
+    if (currentUser.role === UserRole.CLIENT) {
+      if (requestedStatus !== "approved") {
+        return res.status(400).json({ error: "Une pièce client peut être confirmée ou le compte peut être supprimé." });
+      }
+      const reviewedAt = new Date().toISOString();
+      const updatedUser = await updateAccountApprovalAuthenticated(uid, {
+        accountStatus: "approved",
+        approvalReviewedAt: currentUser.approvalReviewedAt || reviewedAt,
+        approvalRejectionReason: "",
+        identityVerificationStatus: "verified",
+        identityReviewedAt: reviewedAt,
+      }, idToken);
+      return res.json({ message: "Pièce d’identité confirmée.", user: updatedUser });
+    }
+    if (currentUser.role !== UserRole.BOUTIQUE) {
+      return res.status(403).json({ error: "Ce type de compte ne peut pas être validé ici." });
     }
 
     const rejectionReason = requestedStatus === "rejected"
@@ -902,6 +905,30 @@ app.put("/api/admin/users/:uid/approval", async (req, res) => {
   } catch (error: any) {
     console.error("Error reviewing account opening:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible d’enregistrer la décision." });
+  }
+});
+
+// Admin API: permanently remove a client profile and its Firebase Auth account.
+app.delete("/api/admin/users/:uid", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    const uid = req.params.uid.trim();
+    const currentUser = await getAuthenticatedUserProfile(uid, idToken);
+    if (!currentUser) return res.status(404).json({ error: "Compte introuvable." });
+    if (currentUser.role !== UserRole.CLIENT) {
+      return res.status(403).json({ error: "Cette action est réservée aux comptes clients." });
+    }
+    await deleteUserProfileAuthenticated(uid, idToken);
+    const adminApp = getAdminApps().length > 0
+      ? getAdminApp()
+      : initializeAdminApp({ projectId: readFirebaseProjectId() });
+    await getAdminAuth(adminApp).deleteUser(uid);
+    res.json({ message: "Compte client supprimé.", uid, identityDocumentPath: currentUser.identityDocumentPath || "" });
+  } catch (error: any) {
+    console.error("Error deleting client account:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de supprimer le compte client." });
   }
 });
 
@@ -1049,61 +1076,11 @@ app.put("/api/admin/boutiques/:id", async (req, res) => {
     const currentBoutique = await getBoutiqueById(id);
     if (!currentBoutique) return res.status(404).json({ error: "Boutique introuvable." });
 
-    const updates: Partial<Boutique> = { ...body, updatedAt: new Date().toISOString() };
-    const applicationUpdates: Partial<BoutiqueApplication> = {};
-    if (body.isSuspended === true) {
-      updates.isSuspended = true;
-      updates.verificationStatus = "suspended";
-      updates.verificationReviewedAt = new Date().toISOString();
-      applicationUpdates.status = "suspended";
-      applicationUpdates.reviewedAt = updates.verificationReviewedAt;
-    } else if (body.isSuspended === false && currentBoutique.isSuspended) {
-      updates.isSuspended = false;
-      updates.verificationStatus = currentBoutique.isVerified ? "verified" : "pending";
-      updates.verificationReviewedAt = new Date().toISOString();
-      updates.verificationRejectionReason = "";
-      applicationUpdates.status = currentBoutique.isVerified ? "verified" : "pending";
-      applicationUpdates.reviewedAt = updates.verificationReviewedAt;
-      applicationUpdates.rejectionReason = "";
-    } else if (body.isVerified === true) {
-      updates.isVerified = true;
-      updates.isSuspended = false;
-      updates.verificationStatus = "verified";
-      updates.verificationReviewedAt = new Date().toISOString();
-      updates.verificationRejectionReason = "";
-      applicationUpdates.status = "verified";
-      applicationUpdates.reviewedAt = updates.verificationReviewedAt;
-      applicationUpdates.rejectionReason = "";
-    } else if (body.verificationStatus === "rejected") {
-      updates.isVerified = false;
-      updates.isSuspended = false;
-      updates.verificationStatus = "rejected";
-      updates.verificationReviewedAt = new Date().toISOString();
-      updates.verificationRejectionReason = typeof body.verificationRejectionReason === "string"
-        ? body.verificationRejectionReason.trim().slice(0, 500)
-        : "Dossier refusé par l’administration.";
-      applicationUpdates.status = "rejected";
-      applicationUpdates.reviewedAt = updates.verificationReviewedAt;
-      applicationUpdates.rejectionReason = updates.verificationRejectionReason;
-    } else if (body.isVerified === false && body.isSuspended !== true) {
-      updates.isVerified = false;
-      updates.isSuspended = false;
-      updates.verificationStatus = "pending";
-      applicationUpdates.status = "pending";
-    }
-    const ownerUpdates = updates.verificationStatus === "verified"
-      ? { accountStatus: "approved" as const, approvalReviewedAt: updates.verificationReviewedAt, approvalRejectionReason: "" }
-      : updates.verificationStatus === "rejected"
-        ? {
-            accountStatus: "rejected" as const,
-            approvalReviewedAt: updates.verificationReviewedAt,
-            approvalRejectionReason: updates.verificationRejectionReason,
-          }
-        : updates.verificationStatus === "suspended"
-          ? { accountStatus: "suspended" as const, approvalReviewedAt: updates.verificationReviewedAt, approvalRejectionReason: "" }
-          : updates.verificationStatus === "pending"
-            ? { accountStatus: "pending" as const, approvalReviewedAt: undefined, approvalRejectionReason: "" }
-            : undefined;
+    const { boutiqueUpdates: updates, applicationUpdates, ownerUpdates } = buildBoutiqueAdminTransition(
+      currentBoutique,
+      body,
+      new Date().toISOString(),
+    );
     await updateBoutiqueVerificationAuthenticated(id, updates, applicationUpdates, idToken, ownerUpdates);
     res.json({
       message: "Boutique updated successfully",
@@ -1122,8 +1099,8 @@ app.delete("/api/admin/boutiques/:id", async (req, res) => {
     if (!idToken) return;
     await assertAdmin(idToken);
     const { id } = req.params;
-    await deleteBoutiqueAuthenticated(id, idToken);
-    res.json({ message: "Boutique deleted successfully", id });
+    const deleted = await deleteBoutiqueAuthenticated(id, idToken);
+    res.json({ message: "Boutique deleted successfully", id, deleted });
   } catch (error: any) {
     console.error("Error deleting boutique:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to delete boutique" });
@@ -1168,7 +1145,7 @@ async function getFirebaseUidFromIdToken(idToken: string): Promise<string> {
   return (await getFirebaseAccountFromIdToken(idToken)).uid;
 }
 
-async function getFirebaseAccountFromIdToken(idToken: string): Promise<{ uid: string; email: string; displayName: string }> {
+async function getFirebaseAccountFromIdToken(idToken: string): Promise<{ uid: string; email: string; displayName: string; emailVerified: boolean }> {
   const configPath = path.join(process.cwd(), "firebase-applet-config.json");
   const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
   if (!firebaseConfig.apiKey) {
@@ -1197,6 +1174,7 @@ async function getFirebaseAccountFromIdToken(idToken: string): Promise<{ uid: st
     uid,
     email: typeof account?.email === "string" ? account.email : "",
     displayName: typeof account?.displayName === "string" ? account.displayName : "",
+    emailVerified: account?.emailVerified === true,
   };
 }
 
@@ -1219,16 +1197,17 @@ async function assertBoutiqueOwner(boutiqueId: string, idToken: string): Promise
 
 async function assertAdmin(idToken: string): Promise<void> {
   const account = await getFirebaseAccountFromIdToken(idToken);
+  if (!account.emailVerified) {
+    const error: any = new Error("Votre adresse email administrateur doit être vérifiée.");
+    error.status = 403;
+    throw error;
+  }
   const profile = await getAuthenticatedUserProfile(account.uid, idToken);
   if (profile?.role !== UserRole.ADMIN) {
     const error: any = new Error("Accès administrateur requis.");
     error.status = 403;
     throw error;
   }
-}
-
-function normalizedAccountStatus(profile: UserProfile): AccountApprovalStatus {
-  return profile.accountStatus || (profile.role === UserRole.ADMIN ? "approved" : "pending");
 }
 
 async function assertApprovedAccount(
@@ -1247,14 +1226,13 @@ async function assertApprovedAccount(
     error.status = 403;
     throw error;
   }
+  if (profile.role !== UserRole.CLIENT && !account.emailVerified) {
+    const error: any = new Error("Vérifiez votre adresse email avant de continuer.");
+    error.status = 403;
+    throw error;
+  }
   if (profile.role !== UserRole.ADMIN && normalizedAccountStatus(profile) !== "approved") {
-    const messages: Record<AccountApprovalStatus, string> = {
-      approved: "",
-      pending: "Votre compte est en attente de validation par l’administration.",
-      rejected: `Votre demande d’ouverture a été refusée${profile.approvalRejectionReason ? ` : ${profile.approvalRejectionReason}` : "."}`,
-      suspended: "Votre compte est suspendu. Contactez l’administration.",
-    };
-    const error: any = new Error(messages[normalizedAccountStatus(profile)]);
+    const error: any = new Error(getAccountBlockingMessage(profile) || "Ce compte ne peut pas accéder à cette fonction.");
     error.status = 403;
     throw error;
   }
@@ -1266,13 +1244,17 @@ app.get("/api/chats/messages", async (req, res) => {
   try {
     const idToken = requireFirebaseIdToken(req, res);
     if (!idToken) return;
-    await assertApprovedAccount(idToken);
+    const { account, profile } = await assertApprovedAccount(idToken);
     const { chatId, participantRole, participantId } = req.query;
-    if (!chatId || !participantId || (participantRole !== "client" && participantRole !== "boutique")) {
+    if (!chatId || (profile.role !== UserRole.CLIENT && profile.role !== UserRole.BOUTIQUE)) {
       return res.status(400).json({ error: "Valid chat participant parameters are required" });
     }
-    const participantField = participantRole === "client" ? "clientId" : "boutiqueOwnerId";
-    const messages = await getChatMessages(chatId.toString(), participantField, participantId.toString(), idToken);
+    const expectedRole = profile.role === UserRole.CLIENT ? "client" : "boutique";
+    if ((participantRole && participantRole !== expectedRole) || (participantId && participantId !== account.uid)) {
+      return res.status(403).json({ error: "Vous ne pouvez consulter que vos propres conversations." });
+    }
+    const participantField = profile.role === UserRole.CLIENT ? "clientId" : "boutiqueOwnerId";
+    const messages = await getChatMessages(chatId.toString(), participantField, account.uid, idToken);
     res.json(messages);
   } catch (error: any) {
     console.error("Error retrieving chat messages:", error);
@@ -1285,7 +1267,7 @@ app.post("/api/chats/messages", async (req, res) => {
   try {
     const idToken = requireFirebaseIdToken(req, res);
     if (!idToken) return;
-    await assertApprovedAccount(idToken);
+    const { account, profile } = await assertApprovedAccount(idToken);
     const message: ChatMessage = req.body;
     const requiredTextFields: Array<keyof ChatMessage> = [
       "id", "chatId", "clientId", "clientName", "boutiqueId", "boutiqueName",
@@ -1305,9 +1287,40 @@ app.post("/api/chats/messages", async (req, res) => {
     if (hasMissingField || hasInvalidRole || hasInvalidThread || hasInvalidDate || hasInvalidLength) {
       return res.status(400).json({ error: "Invalid message data" });
     }
-    message.text = message.text.trim();
-    await addMessageToFirestore(message, idToken);
-    res.status(201).json({ message: "Message saved successfully", data: message });
+    const boutique = await getBoutiqueById(message.boutiqueId);
+    if (!boutique) return res.status(404).json({ error: "Boutique introuvable." });
+    const accessError = getChatAccessError(account.uid, profile, boutique, message);
+    if (accessError) return res.status(403).json({ error: accessError });
+
+    let sanitizedProductContext: ChatMessage["productContext"] | undefined;
+    const rawContext = (message as ChatMessage).productContext;
+    if (rawContext && typeof rawContext === "object") {
+      const productId = typeof rawContext.productId === "string" ? rawContext.productId.trim() : "";
+      const productName = typeof rawContext.productName === "string" ? rawContext.productName.trim().slice(0, 200) : "";
+      const productImage = typeof rawContext.productImage === "string" ? rawContext.productImage.trim().slice(0, 2048) : "";
+      const productPrice = typeof rawContext.productPrice === "string" ? rawContext.productPrice.trim().slice(0, 40) : "";
+      if (productId) {
+        sanitizedProductContext = { productId, productName, productImage, productPrice };
+      }
+    }
+
+    const trustedMessage: ChatMessage = {
+      ...message,
+      clientName: profile.role === UserRole.CLIENT ? (profile.displayName || account.displayName || message.clientName) : message.clientName,
+      clientPhoto: profile.role === UserRole.CLIENT ? (profile.photoURL || "") : message.clientPhoto,
+      boutiqueOwnerId: boutique.ownerId,
+      boutiqueName: boutique.name,
+      boutiqueLogo: boutique.logo,
+      senderId: account.uid,
+      senderName: profile.role === UserRole.CLIENT
+        ? (profile.displayName || account.displayName || message.senderName)
+        : boutique.name,
+      senderRole: profile.role === UserRole.CLIENT ? "client" : "boutique",
+      text: message.text.trim(),
+      ...(sanitizedProductContext ? { productContext: sanitizedProductContext } : { productContext: undefined }),
+    };
+    await addMessageToFirestore(trustedMessage, idToken);
+    res.status(201).json({ message: "Message saved successfully", data: trustedMessage });
   } catch (error: any) {
     console.error("Error saving chat message:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to save message" });
@@ -1319,9 +1332,12 @@ app.get("/api/chats/threads/client/:clientId", async (req, res) => {
   try {
     const idToken = requireFirebaseIdToken(req, res);
     if (!idToken) return;
-    await assertApprovedAccount(idToken, UserRole.CLIENT);
+    const { account } = await assertApprovedAccount(idToken, UserRole.CLIENT);
     const { clientId } = req.params;
-    const messages = await getMessagesByClient(clientId, idToken);
+    if (clientId !== account.uid) {
+      return res.status(403).json({ error: "Vous ne pouvez consulter que vos propres conversations." });
+    }
+    const messages = await getMessagesByClient(account.uid, idToken);
     
     // Group by boutiqueId and find the latest message
     const threadMap: { [boutiqueId: string]: ChatMessage } = {};
@@ -1357,11 +1373,14 @@ app.get("/api/chats/threads/boutique/:boutiqueId", async (req, res) => {
   try {
     const idToken = requireFirebaseIdToken(req, res);
     if (!idToken) return;
-    await assertApprovedAccount(idToken, UserRole.BOUTIQUE);
+    const { account } = await assertApprovedAccount(idToken, UserRole.BOUTIQUE);
     const { boutiqueId } = req.params;
-    const ownerId = req.query.ownerId?.toString().trim();
-    if (!ownerId) return res.status(400).json({ error: "ownerId query parameter is required" });
-    const messages = await getMessagesByBoutique(boutiqueId, ownerId, idToken);
+    await assertBoutiqueOwner(boutiqueId, idToken);
+    const requestedOwnerId = req.query.ownerId?.toString().trim();
+    if (requestedOwnerId && requestedOwnerId !== account.uid) {
+      return res.status(403).json({ error: "Cette messagerie appartient à un autre gérant." });
+    }
+    const messages = await getMessagesByBoutique(boutiqueId, account.uid, idToken);
 
     // Group by clientId and find the latest message
     const threadMap: { [clientId: string]: ChatMessage } = {};
@@ -1581,6 +1600,7 @@ Instructions de réponse:
 // -------------------------------------------------------------
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1599,4 +1619,8 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app, startServer };
+
+if (process.env.STOREHUB_SKIP_SERVER_START !== "1" && !process.env.FUNCTION_TARGET) {
+  void startServer();
+}

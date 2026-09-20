@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch';
-import { getSecureStorageFileUrl } from '../firebase';
+import { deleteUploadedStorageFile, getSecureStorageFileUrl } from '../firebase';
 import { Boutique, ModerationNote, ModerationNoteSeverity, Product, UserProfile, UserRole } from '../types';
 import FennecMascot from './FennecMascot';
 import { 
@@ -118,11 +118,15 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   const [secureDocumentUrl, setSecureDocumentUrl] = useState<string | null>(null);
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const [selectedClientVerificationUid, setSelectedClientVerificationUid] = useState<string | null>(null);
   const selectedApplicationBoutique = previewDoc
     ? boutiques.find(boutique => boutique.id === previewDoc.boutiqueId)
     : undefined;
   const selectedApplicationOwner = selectedApplicationBoutique
     ? users.find(user => user.uid === selectedApplicationBoutique.ownerId || user.boutiqueId === selectedApplicationBoutique.id)
+    : undefined;
+  const selectedClientVerification = selectedClientVerificationUid
+    ? users.find(user => user.uid === selectedClientVerificationUid && user.role === UserRole.CLIENT)
     : undefined;
 
   const fetchAllData = async () => {
@@ -203,7 +207,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
 
   useEffect(() => {
     let cancelled = false;
-    const documentPath = selectedApplicationBoutique?.verificationDocPath;
+    const documentPath = selectedClientVerification?.identityDocumentPath || selectedApplicationBoutique?.verificationDocPath;
     setSecureDocumentUrl(null);
     setDocumentError(null);
     if (!documentPath) {
@@ -218,7 +222,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       })
       .catch(error => {
         if (!cancelled) {
-          console.error('Failed to load boutique verification document:', error);
+          console.error('Failed to load the verification document:', error);
           setDocumentError("Le document sécurisé n’a pas pu être chargé.");
         }
       })
@@ -227,7 +231,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
       });
 
     return () => { cancelled = true; };
-  }, [selectedApplicationBoutique?.verificationDocPath]);
+  }, [selectedApplicationBoutique?.verificationDocPath, selectedClientVerification?.identityDocumentPath]);
 
   // Update Boutique API
   const handleUpdateBoutique = async (boutiqueId: string, updates: Partial<Boutique>) => {
@@ -269,24 +273,35 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
 
   // Delete Boutique API
   const handleDeleteBoutique = async (boutiqueId: string) => {
-    if (!window.confirm("Êtes-vous absolument sûr de vouloir supprimer définitivement cette boutique de StoreHub ? Cette action est irréversible et supprimera tout son contenu associé.")) {
+    if (boutiqueActionBusyId) return;
+    const boutique = boutiques.find(item => item.id === boutiqueId);
+    if (!window.confirm(`Supprimer définitivement « ${boutique?.name || 'cette boutique'} » ?\n\nLa boutique et ses données associées seront retirées de StoreHub. Cette action est irréversible.`)) {
       return;
     }
+    setBoutiqueActionBusyId(boutiqueId);
     try {
       const response = await firebaseAuthenticatedFetch(`/api/admin/boutiques/${boutiqueId}`, {
         method: 'DELETE'
       });
-      if (response.ok) {
-        setBoutiques(prev => prev.filter(b => b.id !== boutiqueId));
-        if (previewDoc && previewDoc.boutiqueId === boutiqueId) {
-          setPreviewDoc(null);
-        }
-        alert("Boutique supprimée avec succès.");
-      } else {
-        alert("Échec de la suppression.");
+      const payload = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "Échec de la suppression de la boutique.");
       }
+
+      setBoutiques(prev => prev.filter(b => b.id !== boutiqueId));
+      setProducts(prev => prev.filter(product => product.boutiqueId !== boutiqueId));
+      if (previewDoc?.boutiqueId === boutiqueId) setPreviewDoc(null);
+      if (selectedModerationBoutiqueId === boutiqueId) {
+        setSelectedModerationBoutiqueId(null);
+        setSelectedModerationCollection(null);
+        setSelectedModerationProductId(null);
+      }
+      alert("Boutique supprimée avec succès.");
     } catch (err) {
       console.error("Error deleting boutique:", err);
+      alert(err instanceof Error ? err.message : "Une erreur est survenue pendant la suppression.");
+    } finally {
+      setBoutiqueActionBusyId(null);
     }
   };
 
@@ -339,9 +354,40 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
           ? { ...current, status: status === 'approved' ? 'verified' : 'rejected' }
           : current);
       }
-      alert(status === 'approved' ? 'La boutique est maintenant active.' : 'La demande boutique a été refusée.');
+      if (user.role === UserRole.CLIENT) {
+        setSelectedClientVerificationUid(null);
+        setSecureDocumentUrl(null);
+        setActiveTab('users');
+      }
+      alert(user.role === UserRole.CLIENT
+        ? 'La pièce d’identité du client est confirmée.'
+        : status === 'approved' ? 'La boutique est maintenant active.' : 'La demande boutique a été refusée.');
     } catch (decisionError: any) {
       alert(decisionError?.message || 'Impossible d’enregistrer cette décision.');
+    } finally {
+      setApprovalBusyUid(null);
+    }
+  };
+
+  const handleDeleteClientAccount = async (user: UserProfile) => {
+    if (!window.confirm(`Supprimer définitivement le compte de « ${user.displayName || user.email} » ?\n\nLe profil et l’accès Firebase seront supprimés. Cette action est irréversible.`)) return;
+    setApprovalBusyUid(user.uid);
+    try {
+      const response = await firebaseAuthenticatedFetch(`/api/admin/users/${encodeURIComponent(user.uid)}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Le compte client n’a pas pu être supprimé.');
+      if (payload?.identityDocumentPath) {
+        await deleteUploadedStorageFile(payload.identityDocumentPath).catch(error => {
+          console.error('Le compte a été supprimé, mais le fichier d’identité n’a pas pu être nettoyé:', error);
+        });
+      }
+      setUsers(current => current.filter(item => item.uid !== user.uid));
+      setSelectedClientVerificationUid(null);
+      setSecureDocumentUrl(null);
+      setActiveTab('users');
+      alert('Le compte client a été supprimé.');
+    } catch (deleteError: any) {
+      alert(deleteError?.message || 'Impossible de supprimer le compte client.');
     } finally {
       setApprovalBusyUid(null);
     }
@@ -404,6 +450,7 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   };
 
   const openBoutiqueDossier = (boutique: Boutique) => {
+    setSelectedClientVerificationUid(null);
     setPreviewDoc({
       boutiqueId: boutique.id,
       boutiqueName: boutique.name,
@@ -417,6 +464,13 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
             ? 'rejected'
             : 'pending',
     });
+    setActiveTab('documents');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openClientIdentityDossier = (user: UserProfile) => {
+    setPreviewDoc(null);
+    setSelectedClientVerificationUid(user.uid);
     setActiveTab('documents');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -454,11 +508,16 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   // Calculations for Stats
   const totalBoutiquesCount = boutiques.length;
   const totalProductsCount = products.length;
-  const pendingAccounts = users
+  const pendingBoutiqueAccounts = users
     .filter(user => user.role === UserRole.BOUTIQUE
       && user.accountStatus === 'pending'
       && boutiques.some(boutique => boutique.id === user.boutiqueId || boutique.ownerId === user.uid))
     .sort((a, b) => new Date(b.approvalSubmittedAt || b.createdAt).getTime() - new Date(a.approvalSubmittedAt || a.createdAt).getTime());
+  const pendingClientIdentities = users
+    .filter(user => user.role === UserRole.CLIENT && user.identityVerificationStatus === 'pending' && Boolean(user.identityDocumentPath))
+    .sort((a, b) => new Date(b.identitySubmittedAt || b.createdAt).getTime() - new Date(a.identitySubmittedAt || a.createdAt).getTime());
+  const pendingAccounts = [...pendingClientIdentities, ...pendingBoutiqueAccounts]
+    .sort((a, b) => new Date(b.identitySubmittedAt || b.approvalSubmittedAt || b.createdAt).getTime() - new Date(a.identitySubmittedAt || a.approvalSubmittedAt || a.createdAt).getTime());
   const pendingAccountCount = pendingAccounts.length;
   const pendingValidationCount = pendingAccountCount;
   const verifiedBoutiquesCount = boutiques.filter(b => b.isVerified && !b.isSuspended).length;
@@ -554,9 +613,10 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
   const filteredUsers = users
     .filter(u => {
       const query = userSearch.toLowerCase();
-      return u.role === UserRole.BOUTIQUE
+      return ((u.role === UserRole.BOUTIQUE
         && u.accountStatus === 'pending'
-        && boutiques.some(boutique => boutique.id === u.boutiqueId || boutique.ownerId === u.uid)
+        && boutiques.some(boutique => boutique.id === u.boutiqueId || boutique.ownerId === u.uid))
+        || (u.role === UserRole.CLIENT && u.identityVerificationStatus === 'pending' && Boolean(u.identityDocumentPath)))
         && (u.displayName.toLowerCase().includes(query) || u.email.toLowerCase().includes(query));
     })
     .sort((a, b) => {
@@ -580,9 +640,9 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
     },
     {
       id: 'users',
-      title: 'Demandes Boutique',
+      title: 'Vérifications d’identité',
       category: 'Validation des ouvertures',
-      description: 'Examinez les informations et les documents transmis avant d’autoriser une boutique.',
+      description: 'Examinez les pièces des clients et les dossiers transmis par les boutiques.',
       icon: Users,
       badge: pendingAccountCount > 0 ? `${pendingAccountCount} À confirmer` : 'Aucune attente',
       badgeStyle: pendingAccountCount > 0 ? 'bg-amber-950/50 text-amber-400 border-amber-800/50 animate-pulse' : 'bg-blue-950/40 text-blue-400 border-blue-800/40',
@@ -763,6 +823,21 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                     {pendingAccountCount > 0 && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
                         {pendingAccounts.slice(0, 4).map(account => {
+                          if (account.role === UserRole.CLIENT) {
+                            return (
+                              <button
+                                key={account.uid}
+                                onClick={() => openClientIdentityDossier(account)}
+                                className="flex items-center gap-3 rounded-xl bg-black/25 border border-[#D4AF37]/15 p-3.5 text-left hover:border-[#D4AF37]/45 active:scale-[0.98] transition-all"
+                              >
+                                <img src={account.photoURL} alt={account.displayName} className="h-11 w-11 rounded-full object-cover border border-[#D4AF37]/25" />
+                                <span className="min-w-0">
+                                  <span className="block truncate text-xs text-white font-semibold">{account.displayName || account.email}</span>
+                                  <span className="mt-1 block text-[9px] font-mono text-amber-400">IDENTITÉ CLIENT À VÉRIFIER</span>
+                                </span>
+                              </button>
+                            );
+                          }
                           const boutique = boutiques.find(item => item.id === account.boutiqueId || item.ownerId === account.uid);
                           if (!boutique) return null;
                           return (
@@ -995,13 +1070,13 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                       Aucune boutique n’a été trouvée pour votre recherche.
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-4 sm:gap-6">
+                    <div className="grid grid-cols-2 gap-2.5 sm:gap-6">
                       {filteredBoutiques.map(b => {
                         const bProducts = products.filter(p => p.boutiqueId === b.id);
                         return (
                           <div 
                             key={b.id} 
-                            className={`p-5 rounded-2xl bg-[#090909] border flex flex-col justify-between gap-5 transition-all duration-300 relative overflow-hidden group ${
+                            className={`min-w-0 p-3 sm:p-5 rounded-xl sm:rounded-2xl bg-[#090909] border flex flex-col justify-between gap-3 sm:gap-5 transition-all duration-300 relative overflow-hidden group ${
                               b.isSuspended 
                                 ? 'border-red-950 bg-gradient-to-br from-[#090909] to-red-950/5' 
                                 : b.isVerified 
@@ -1009,14 +1084,24 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                                   : 'border-[#141414] hover:border-zinc-800'
                             }`}
                           >
-                            {/* Card Header with Gold Rings and Badges */}
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-center gap-3">
+                            {/* Card status and identity stay on separate rows on narrow mobile cards. */}
+                            <div className="min-w-0 space-y-2.5">
+                              <div className="flex min-h-5 justify-end">
+                                {b.isSuspended ? (
+                                  <span className="max-w-full truncate px-2 py-0.5 bg-red-950/60 border border-red-900/60 text-red-400 rounded text-[7px] sm:text-[8px] font-mono uppercase tracking-[0.12em] font-semibold">Suspendue</span>
+                                ) : b.isVerified ? (
+                                  <span className="max-w-full truncate px-2 py-0.5 bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[#D4AF37] rounded text-[7px] sm:text-[8px] font-mono uppercase tracking-[0.12em] font-bold">Certifiée</span>
+                                ) : (
+                                  <span className="max-w-full truncate px-2 py-0.5 bg-zinc-900 border border-zinc-700 text-zinc-400 rounded text-[7px] sm:text-[8px] font-mono uppercase tracking-[0.12em]">En attente</span>
+                                )}
+                              </div>
+
+                              <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
                                 <div className="relative shrink-0">
                                   <img 
                                     src={b.logo} 
                                     alt={b.name} 
-                                    className={`w-11 h-11 rounded-full object-cover bg-zinc-900 border ${
+                                    className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full object-cover bg-zinc-900 border ${
                                       b.isVerified ? 'border-[#D4AF37]' : 'border-zinc-800'
                                     }`} 
                                   />
@@ -1026,31 +1111,28 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                                     </div>
                                   )}
                                 </div>
-                                <div>
-                                  <h4 className="serif-title text-base font-semibold text-white tracking-wide">{b.name}</h4>
-                                  <p className="text-[10px] text-[#D4AF37] font-mono mt-0.5">slug: /{b.slug}</p>
+                                <div className="min-w-0 flex-1">
+                                  <h4 className="serif-title line-clamp-2 text-sm sm:text-base font-semibold leading-tight text-white tracking-wide">{b.name}</h4>
+                                  <p title={`/${b.slug}`} className="mt-1 truncate text-[8px] sm:text-[10px] text-[#D4AF37] font-mono">/{b.slug}</p>
                                 </div>
                               </div>
-                              
-                              {/* Status Badges */}
-                              {b.isSuspended ? (
-                                <span className="px-2 py-0.5 bg-red-950/60 border border-red-900/60 text-red-400 rounded text-[8px] font-mono uppercase tracking-widest font-semibold">Suspendue</span>
-                              ) : b.isVerified ? (
-                                <span className="px-2 py-0.5 bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[#D4AF37] rounded text-[8px] font-mono uppercase tracking-widest font-bold">Certifiée</span>
-                              ) : (
-                                <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-700 text-zinc-400 rounded text-[8px] font-mono uppercase tracking-widest">En Attente</span>
-                              )}
                             </div>
 
                             {/* Card Body description */}
-                            <p className="text-xs text-zinc-400 font-light line-clamp-3 leading-relaxed mt-2 min-h-[48px]">
+                            <p className="line-clamp-3 min-h-[54px] text-[10px] sm:text-xs leading-[1.55] text-zinc-400 font-light">
                               {b.description || "Aucune description fournie par la boutique pour le moment."}
                             </p>
 
                             {/* Card Stats counters */}
-                            <div className="flex items-center justify-between border-t border-[#141414] pt-3 text-[10px] font-mono text-zinc-500">
-                              <span>Catalogue : <strong className="text-white font-bold">{bProducts.length} articles</strong></span>
-                              <span>ID: ...{b.id.substring(b.id.length - 8)}</span>
+                            <div className="space-y-1.5 border-t border-[#141414] pt-2.5 text-[8px] sm:text-[10px] font-mono text-zinc-500">
+                              <div className="flex min-w-0 items-center justify-between gap-2">
+                                <span>Catalogue</span>
+                                <strong className="shrink-0 text-white font-bold">{bProducts.length} article{bProducts.length > 1 ? 's' : ''}</strong>
+                              </div>
+                              <div className="flex min-w-0 items-center justify-between gap-2">
+                                <span>ID</span>
+                                <span className="min-w-0 truncate text-right" title={b.id}>…{b.id.substring(b.id.length - 8)}</span>
+                              </div>
                             </div>
 
                             {/* Card Administrative Actions Bar */}
@@ -1086,16 +1168,19 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                                 <span className="min-w-0 truncate">{b.isSuspended ? 'Réactiver' : 'Suspendre'}</span>
                               </button>
 
-                            </div>
+                              {/* Permanent destructive action: visible and usable on touch screens. */}
+                              <button
+                                onClick={() => handleDeleteBoutique(b.id)}
+                                disabled={boutiqueActionBusyId === b.id}
+                                aria-busy={boutiqueActionBusyId === b.id}
+                                className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-red-800/60 bg-red-950/25 px-2 py-2 font-mono text-[9px] font-semibold uppercase tracking-wider text-red-400 transition-all hover:border-red-700 hover:bg-red-950/45 hover:text-red-300 disabled:cursor-wait disabled:opacity-50"
+                                title={`Supprimer définitivement ${b.name}`}
+                              >
+                                <Trash2 className="h-3 w-3 shrink-0" />
+                                <span className="min-w-0 truncate">Supprimer</span>
+                              </button>
 
-                            {/* Delete Button absolute overlay or subtle top right */}
-                            <button
-                              onClick={() => handleDeleteBoutique(b.id)}
-                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1.5 bg-[#0F0F0F]/80 hover:bg-red-950 border border-zinc-900 hover:border-red-900 text-zinc-500 hover:text-red-400 rounded-md transition-all cursor-pointer"
-                              title="Bannir définitivement la boutique"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            </div>
 
                           </div>
                         );
@@ -1386,13 +1471,13 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                       type="text"
                       value={userSearch}
                       onChange={e => setUserSearch(e.target.value)}
-                      placeholder="Rechercher une demande boutique..."
+                      placeholder="Rechercher un client ou une boutique..."
                       className="w-full bg-[#0A0A0A] border border-[#141414] rounded-2xl pl-12 pr-4 py-3.5 text-xs text-white placeholder-zinc-500 outline-none focus:border-[#D4AF37] transition-all font-sans"
                     />
                   </div>
 
                   <div className="flex items-center justify-between px-1">
-                    <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">Demandes d’ouverture boutique</p>
+                    <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">Vérifications clients et boutiques</p>
                     <span className={`text-[9px] font-mono font-bold ${pendingAccountCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
                       {pendingAccountCount} EN ATTENTE
                     </span>
@@ -1401,12 +1486,29 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                   {filteredUsers.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-[#232323] bg-[#0A0A0A] px-6 py-14 text-center">
                       <ShieldCheck className="mx-auto h-9 w-9 text-[#D4AF37]" />
-                      <p className="mt-4 text-sm text-white">Aucune demande boutique en attente</p>
+                      <p className="mt-4 text-sm text-white">Aucune vérification en attente</p>
                       <p className="mt-1 text-[10px] text-zinc-500">Les nouveaux dossiers apparaîtront automatiquement ici.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-3 sm:gap-5">
                       {filteredUsers.map(user => {
+                        if (user.role === UserRole.CLIENT) {
+                          return (
+                            <button
+                              key={user.uid}
+                              type="button"
+                              onClick={() => openClientIdentityDossier(user)}
+                              aria-label={`Ouvrir la pièce d’identité de ${user.displayName || user.email}`}
+                              className="flex min-w-0 items-center gap-3 rounded-2xl border border-amber-900/35 bg-[#0A0A0A] p-3 text-left hover:border-[#D4AF37]/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37] active:scale-[0.98] transition-all sm:p-4"
+                            >
+                              <img src={user.photoURL} alt={user.displayName} className="h-12 w-12 shrink-0 rounded-full border border-[#D4AF37]/30 bg-zinc-900 object-cover sm:h-14 sm:w-14" />
+                              <span className="min-w-0">
+                                <span className="block truncate text-xs font-semibold text-white sm:text-sm">{user.displayName || user.email}</span>
+                                <span className="mt-1 block text-[9px] font-mono text-amber-400">PIÈCE CLIENT EN ATTENTE</span>
+                              </span>
+                            </button>
+                          );
+                        }
                         const linkedBoutique = boutiques.find(boutique => boutique.id === user.boutiqueId || boutique.ownerId === user.uid);
                         if (!linkedBoutique) return null;
                         return (
@@ -1495,7 +1597,82 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
               {/* TAB 6: COMPLETE BOUTIQUE APPLICATION */}
               {activeTab === 'documents' && (
                 <div className="space-y-5">
-                  {previewDoc && selectedApplicationBoutique ? (
+                  {selectedClientVerification ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { setSelectedClientVerificationUid(null); setActiveTab('users'); }}
+                        className="inline-flex items-center gap-2 rounded-lg border border-[#252525] bg-[#0A0A0A] px-3 py-2 text-[10px] font-mono uppercase tracking-wider text-zinc-300 hover:border-[#D4AF37]/55 hover:text-[#D4AF37]"
+                      >
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        Retour aux vérifications
+                      </button>
+
+                      <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5 sm:p-6">
+                        <div className="flex items-center gap-4">
+                          <img src={selectedClientVerification.photoURL} alt={selectedClientVerification.displayName} className="h-20 w-20 rounded-full border-2 border-[#D4AF37] bg-zinc-900 object-cover" />
+                          <div className="min-w-0">
+                            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-amber-400">Identité client en attente</p>
+                            <h2 className="mt-1 truncate text-xl font-semibold text-white">{selectedClientVerification.displayName || selectedClientVerification.email}</h2>
+                            <p className="mt-1 break-all text-xs text-zinc-500">{selectedClientVerification.email}</p>
+                          </div>
+                        </div>
+                        <dl className="mt-5 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
+                          <div><dt className="text-zinc-500">Ville</dt><dd className="mt-1 text-white">{selectedClientVerification.city || 'Non renseignée'}</dd></div>
+                          <div><dt className="text-zinc-500">Inscription</dt><dd className="mt-1 text-white">{new Date(selectedClientVerification.createdAt).toLocaleString('fr-FR')}</dd></div>
+                          <div><dt className="text-zinc-500">Pièce reçue</dt><dd className="mt-1 text-white">{new Date(selectedClientVerification.identitySubmittedAt || selectedClientVerification.createdAt).toLocaleString('fr-FR')}</dd></div>
+                          <div><dt className="text-zinc-500">Identifiant</dt><dd className="mt-1 break-all font-mono text-zinc-300">{selectedClientVerification.uid}</dd></div>
+                        </dl>
+                      </section>
+
+                      <section className="rounded-2xl border border-[#1D1D1D] bg-[#0A0A0A] p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-xs font-semibold text-[#D4AF37]">Pièce d’identité transmise</h3>
+                            <p className="mt-2 break-all text-xs text-white">{selectedClientVerification.identityDocumentName}</p>
+                          </div>
+                          <FileText className="h-5 w-5 text-zinc-500" />
+                        </div>
+                        <div className="mt-4 min-h-48 overflow-hidden rounded-xl border border-[#202020] bg-[#070707]">
+                          {documentLoading ? (
+                            <div className="flex min-h-48 animate-pulse items-center justify-center text-[10px] font-mono text-zinc-500">Chargement sécurisé...</div>
+                          ) : documentError ? (
+                            <div className="flex min-h-48 items-center justify-center px-5 text-center text-[10px] text-red-400">{documentError}</div>
+                          ) : secureDocumentUrl ? (
+                            /\.(png|jpe?g|webp)$/i.test(selectedClientVerification.identityDocumentName || '')
+                              ? <img src={secureDocumentUrl} alt="Pièce d’identité du client" className="max-h-96 w-full object-contain" />
+                              : <iframe src={secureDocumentUrl} title="Pièce d’identité du client" className="h-96 w-full bg-white" />
+                          ) : (
+                            <div className="flex min-h-48 items-center justify-center text-[10px] text-zinc-500">Aucun fichier disponible.</div>
+                          )}
+                        </div>
+                        {secureDocumentUrl && (
+                          <a href={secureDocumentUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-[#D4AF37] hover:text-white">
+                            <ExternalLink className="h-3.5 w-3.5" /> Ouvrir le document
+                          </a>
+                        )}
+                      </section>
+
+                      <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[#252525] bg-[#0A0A0A] p-4 sm:ml-auto sm:max-w-md">
+                        <button
+                          type="button"
+                          disabled={approvalBusyUid === selectedClientVerification.uid}
+                          onClick={() => handleAccountDecision(selectedClientVerification, 'approved')}
+                          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 text-[10px] font-mono font-bold uppercase tracking-wider text-black disabled:opacity-50"
+                        >
+                          <Check className="h-4 w-4" /> Confirmer la pièce
+                        </button>
+                        <button
+                          type="button"
+                          disabled={approvalBusyUid === selectedClientVerification.uid}
+                          onClick={() => handleDeleteClientAccount(selectedClientVerification)}
+                          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-800 bg-red-950/35 px-4 text-[10px] font-mono font-bold uppercase tracking-wider text-red-300 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" /> Supprimer le compte
+                        </button>
+                      </div>
+                    </>
+                  ) : previewDoc && selectedApplicationBoutique ? (
                     <>
                       <button
                         type="button"

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Product, UserPreferences } from '../types';
 import { Send, Sparkles, MessageSquare, Compass, Trash2, ArrowRight } from 'lucide-react';
+import { firebaseAppCheckFetch } from '../utils/firebaseAuthenticatedFetch';
 
 interface Message {
   id: string;
@@ -55,7 +56,7 @@ export default function StylistChat({ preferences, products, onProductClick }: S
 
     try {
       // Proxy request to backend Express Gemini Endpoint
-      const response = await fetch('/api/stylist/chat', {
+      const response = await firebaseAppCheckFetch('/api/stylist/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

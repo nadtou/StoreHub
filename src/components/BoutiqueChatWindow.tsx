@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Send, ArrowLeft, Store, MessageSquare, Clock, User } from "lucide-react";
-import { Boutique, UserProfile, UserRole } from "../types";
+import { Send, ArrowLeft, Store, MessageSquare, Clock, X } from "lucide-react";
+import { Boutique, UserRole } from "../types";
 import { getStableChatUserId } from "../utils/chatIdentity";
 import { firebaseAuthenticatedFetch } from "../utils/firebaseAuthenticatedFetch";
+
+export interface ChatMessageProductContext {
+  productId: string;
+  productName: string;
+  productImage: string;
+  productPrice: string;
+}
 
 export interface ChatMessage {
   id: string;
@@ -19,6 +26,7 @@ export interface ChatMessage {
   senderRole: "client" | "boutique";
   text: string;
   createdAt: string;
+  productContext?: ChatMessageProductContext;
 }
 
 interface BoutiqueChatWindowProps {
@@ -27,6 +35,8 @@ interface BoutiqueChatWindowProps {
   boutique: Boutique;
   client: { uid: string; displayName: string; photoURL: string; email: string };
   onBack: () => void;
+  initialProductContext?: ChatMessageProductContext | null;
+  onProductContextConsumed?: () => void;
 }
 
 export default function BoutiqueChatWindow({
@@ -35,13 +45,27 @@ export default function BoutiqueChatWindow({
   boutique,
   client,
   onBack,
+  initialProductContext,
+  onProductContextConsumed,
 }: BoutiqueChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [pendingProductContext, setPendingProductContext] = useState<ChatMessageProductContext | null>(
+    initialProductContext ?? null,
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (initialProductContext) {
+      setPendingProductContext(initialProductContext);
+      setInputText((current) =>
+        current.trim() ? current : `Bonjour, je suis intéressé(e) par « ${initialProductContext.productName} ». `,
+      );
+    }
+  }, [initialProductContext]);
 
   // Poll for messages
   useEffect(() => {
@@ -87,6 +111,7 @@ export default function BoutiqueChatWindow({
     const senderName = currentUser.displayName || currentUser.email.split("@")[0];
     const senderRole = currentUser.role === UserRole.CLIENT ? "client" : "boutique";
 
+    const attachedContext = pendingProductContext;
     const newMessage: ChatMessage = {
       id: `msg_${Date.now()}`,
       chatId,
@@ -102,12 +127,15 @@ export default function BoutiqueChatWindow({
       senderRole,
       text: trimmedText,
       createdAt: new Date().toISOString(),
+      ...(attachedContext ? { productContext: attachedContext } : {}),
     };
 
     // Optimistic UI update
     setMessages((prev) => [...prev, newMessage]);
     setInputText("");
     setSendError("");
+    setPendingProductContext(null);
+    onProductContextConsumed?.();
     setSending(true);
 
     try {
@@ -124,6 +152,7 @@ export default function BoutiqueChatWindow({
       console.error("Error sending message:", error);
       setMessages((previous) => previous.filter((message) => message.id !== newMessage.id));
       setInputText(trimmedText);
+      if (attachedContext) setPendingProductContext(attachedContext);
       setSendError(error instanceof Error ? error.message : "Le message n'a pas pu être envoyé.");
     } finally {
       setSending(false);
@@ -222,6 +251,34 @@ export default function BoutiqueChatWindow({
                       : "bg-luxury-panel border-luxury-border text-zinc-200"
                   }`}
                 >
+                  {msg.productContext && msg.productContext.productId && (
+                    <div className="mb-2 flex items-center gap-2 border border-luxury-gold/30 bg-black/40 p-2">
+                      {msg.productContext.productImage ? (
+                        <img
+                          src={msg.productContext.productImage}
+                          alt={msg.productContext.productName || "Article discuté"}
+                          className="h-12 w-12 shrink-0 object-cover border border-luxury-gold/40"
+                        />
+                      ) : (
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center border border-luxury-gold/40 bg-luxury-panel">
+                          <Store className="h-4 w-4 text-luxury-gold" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[10px] font-mono uppercase tracking-widest text-luxury-gold">
+                          À propos de
+                        </p>
+                        <p className="truncate text-xs font-semibold text-white">
+                          {msg.productContext.productName || "Article"}
+                        </p>
+                        {msg.productContext.productPrice && (
+                          <p className="truncate text-[10px] font-mono text-zinc-400">
+                            {msg.productContext.productPrice}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <p className="break-words whitespace-pre-wrap">{msg.text}</p>
                 </div>
 
@@ -238,6 +295,40 @@ export default function BoutiqueChatWindow({
       </div>
 
       {/* Input Form Footer */}
+      {pendingProductContext && (
+        <div className="flex items-center gap-3 border-t border-luxury-gold/30 bg-luxury-panel/80 px-4 py-2">
+          {pendingProductContext.productImage ? (
+            <img
+              src={pendingProductContext.productImage}
+              alt={pendingProductContext.productName}
+              className="h-11 w-11 shrink-0 object-cover border border-luxury-gold/40"
+            />
+          ) : (
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-luxury-gold/40 bg-luxury-dark">
+              <Store className="h-4 w-4 text-luxury-gold" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="text-[9px] font-mono uppercase tracking-widest text-luxury-gold">Message attaché à</p>
+            <p className="truncate text-xs font-semibold text-white">{pendingProductContext.productName || "Article"}</p>
+            {pendingProductContext.productPrice && (
+              <p className="truncate text-[10px] font-mono text-zinc-400">{pendingProductContext.productPrice}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setPendingProductContext(null);
+              onProductContextConsumed?.();
+            }}
+            className="p-1 text-zinc-500 hover:text-white transition-colors"
+            title="Retirer la référence article"
+            aria-label="Retirer l’article attaché"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       {sendError && (
         <p className="px-4 py-2 bg-red-950/40 border-t border-red-900/50 text-[10px] text-red-300" role="alert">
           {sendError}

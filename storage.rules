@@ -12,7 +12,9 @@ service firebase.storage {
     }
 
     function isAdminClaim() {
-      return signedIn() && request.auth.token.role == "admin";
+      return signedIn()
+        && request.auth.token.keys().hasAll(["role"])
+        && request.auth.token.role == "admin";
     }
 
     function validVerificationDocument(ownerId, boutiqueId) {
@@ -23,6 +25,15 @@ service firebase.storage {
         && request.resource.metadata.ownerId == ownerId
         && request.resource.metadata.boutiqueId == boutiqueId
         && request.resource.metadata.documentType == "legal-verification";
+    }
+
+    function validClientIdentityDocument(userId) {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/jpeg|image/png|image/webp')
+        && request.resource.metadata.userId == userId
+        && request.resource.metadata.documentType == "client-identity";
     }
 
     // Legacy public media remain readable, but all new writes use an owner UID
@@ -51,6 +62,16 @@ service firebase.storage {
         && validVerificationDocument(ownerId, boutiqueId);
       allow update: if false;
       allow delete: if signedIn() && request.auth.uid == ownerId;
+    }
+
+    match /client-identity/{userId}/{fileName} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdminClaim());
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && fileName.matches('identity-[0-9]+\\.(pdf|jpg|png|webp)')
+        && validClientIdentityDocument(userId);
+      allow update: if false;
+      allow delete: if signedIn() && (request.auth.uid == userId || isAdminClaim());
     }
 
     match /users/{userId}/avatars/{fileName} {

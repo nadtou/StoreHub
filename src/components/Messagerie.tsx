@@ -6,7 +6,8 @@ import {
 import { Boutique, UserRole, ManualOrder, OrderStatus, Product } from "../types";
 import { Thread } from "./BoutiqueChatThreads";
 import { getStableChatUserId, getUserBoutique } from "../utils/chatIdentity";
-import { firebaseAuthenticatedFetch } from "../utils/firebaseAuthenticatedFetch";
+import { firebaseAppCheckFetch, firebaseAuthenticatedFetch } from "../utils/firebaseAuthenticatedFetch";
+import { isOrderStatusTransitionAllowed } from "../utils/commerceRules";
 
 function saveAmountInDinars(value: string) {
   const amount = value.trim().replace(/\s*(?:€|EUR|DZD|DA)\s*$/i, '').trim();
@@ -52,6 +53,7 @@ export default function Messagerie({
   const [orderStatusFilter, setOrderStatusFilter] = useState<'all' | OrderStatus>('all');
   const [orderSearchQuery, setOrderSearchQuery] = useState("");
   const [showAddOrderModal, setShowAddOrderModal] = useState(false);
+  const [orderError, setOrderError] = useState("");
 
   // New Order Form State
   const [newClientName, setNewClientName] = useState("");
@@ -81,7 +83,7 @@ export default function Messagerie({
       try {
         const [ordersResponse, productsResponse] = await Promise.all([
           firebaseAuthenticatedFetch(`/api/orders?boutiqueId=${encodeURIComponent(orderBoutiqueId)}`),
-          fetch('/api/products')
+          firebaseAppCheckFetch('/api/products')
         ]);
         if (ordersResponse.ok) setOrders(await ordersResponse.json());
         if (productsResponse.ok) {
@@ -178,15 +180,18 @@ export default function Messagerie({
     };
 
     try {
+      setOrderError("");
       const response = await firebaseAuthenticatedFetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newOrder)
       });
-      if (!response.ok) throw new Error('Order could not be saved');
-      setOrders((currentOrders) => [newOrder, ...currentOrders]);
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'La commande n’a pas pu être enregistrée.');
+      setOrders((currentOrders) => [payload as ManualOrder, ...currentOrders]);
     } catch (error) {
       console.error('Failed to save manual order:', error);
+      setOrderError(error instanceof Error ? error.message : 'La commande n’a pas pu être enregistrée.');
       return;
     }
     setShowAddOrderModal(false);
@@ -201,15 +206,18 @@ export default function Messagerie({
   // Update Status Handler
   const handleUpdateStatus = async (orderId: string, status: OrderStatus) => {
     try {
+      setOrderError("");
       const response = await firebaseAuthenticatedFetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, boutiqueId: orderBoutiqueId })
       });
-      if (!response.ok) throw new Error('Order status could not be saved');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Le statut n’a pas pu être enregistré.');
       setOrders((currentOrders) => currentOrders.map((order) => order.id === orderId ? { ...order, status } : order));
     } catch (error) {
       console.error('Failed to update manual order:', error);
+      setOrderError(error instanceof Error ? error.message : 'Le statut n’a pas pu être enregistré.');
     }
   };
 
@@ -487,6 +495,11 @@ export default function Messagerie({
       {/* 3. TAB 2: GESTION DES COMMANDES MANUELLES */}
       {mainTab === 'orders' && (
         <div className="flex-grow flex flex-col overflow-hidden">
+          {orderError && (
+            <p role="alert" className="mx-5 mt-3 border border-red-700/50 bg-red-950/30 px-3 py-2 text-[11px] text-red-200">
+              {orderError}
+            </p>
+          )}
           
           {/* Status Filter Badges & Search */}
           <div className="px-5 py-3 border-b border-luxury-border/60 bg-luxury-panel/20 space-y-3 shrink-0">
@@ -612,8 +625,9 @@ export default function Messagerie({
                         </span>
                         <button
                           onClick={() => handleDeleteOrder(order.id)}
-                          className="block text-[10px] text-zinc-600 hover:text-red-400 transition-colors mt-1 ml-auto cursor-pointer p-1"
-                          title="Supprimer la commande"
+                          disabled={isLivre}
+                          className="block text-[10px] text-zinc-600 hover:text-red-400 transition-colors mt-1 ml-auto cursor-pointer p-1 disabled:cursor-not-allowed disabled:opacity-25"
+                          title={isLivre ? "Une commande livrée reste dans l’historique" : "Supprimer la commande"}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -665,10 +679,11 @@ export default function Messagerie({
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => handleUpdateStatus(order.id, 'en_attente')}
+                          disabled={!isOrderStatusTransitionAllowed(order.status, 'en_attente')}
                           className={`px-2 py-0.5 text-[8px] font-mono uppercase tracking-wider border transition-all cursor-pointer ${
                             isEnAttente
                               ? "bg-amber-500 text-black border-amber-400 font-bold"
-                              : "bg-luxury-dark/60 text-zinc-400 border-luxury-border hover:border-amber-500/50 hover:text-amber-300"
+                              : "bg-luxury-dark/60 text-zinc-400 border-luxury-border hover:border-amber-500/50 hover:text-amber-300 disabled:cursor-not-allowed disabled:opacity-30"
                           }`}
                         >
                           En attente
@@ -676,10 +691,11 @@ export default function Messagerie({
 
                         <button
                           onClick={() => handleUpdateStatus(order.id, 'en_cours')}
+                          disabled={!isOrderStatusTransitionAllowed(order.status, 'en_cours')}
                           className={`px-2 py-0.5 text-[8px] font-mono uppercase tracking-wider border transition-all cursor-pointer ${
                             isEnCours
                               ? "bg-sky-500 text-black border-sky-400 font-bold"
-                              : "bg-luxury-dark/60 text-zinc-400 border-luxury-border hover:border-sky-500/50 hover:text-sky-300"
+                              : "bg-luxury-dark/60 text-zinc-400 border-luxury-border hover:border-sky-500/50 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-30"
                           }`}
                         >
                           En cours
@@ -687,6 +703,7 @@ export default function Messagerie({
 
                         <button
                           onClick={() => handleUpdateStatus(order.id, 'livre')}
+                          disabled={!isOrderStatusTransitionAllowed(order.status, 'livre')}
                           className={`px-2 py-0.5 text-[8px] font-mono uppercase tracking-wider border transition-all cursor-pointer ${
                             isLivre
                               ? "bg-emerald-500 text-black border-emerald-400 font-bold"

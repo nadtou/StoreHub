@@ -18,6 +18,7 @@ export interface UserStats {
 }
 
 export type AccountApprovalStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+export type ClientIdentityVerificationStatus = 'pending' | 'verified';
 
 export interface UserProfile {
   uid: string;
@@ -36,6 +37,11 @@ export interface UserProfile {
   approvalSubmittedAt?: string;
   approvalReviewedAt?: string;
   approvalRejectionReason?: string;
+  identityDocumentName?: string;
+  identityDocumentPath?: string;
+  identityVerificationStatus?: ClientIdentityVerificationStatus;
+  identitySubmittedAt?: string;
+  identityReviewedAt?: string;
 }
 
 export interface LocationInfo {
