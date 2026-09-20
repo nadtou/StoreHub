@@ -86,6 +86,8 @@ export default function BoutiqueSubscriptionPanel({
   const [note, setNote] = useState('');
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [chargilyLoading, setChargilyLoading] = useState(false);
+  const [chargilyMessage, setChargilyMessage] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [payments, setPayments] = useState<SubscriptionPayment[]>([]);
@@ -165,6 +167,31 @@ export default function BoutiqueSubscriptionPanel({
       setError(submitError instanceof Error ? submitError.message : "Échec de l'envoi du paiement.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleChargily = async () => {
+    setChargilyMessage('');
+    setChargilyLoading(true);
+    try {
+      const res = await firebaseAuthenticatedFetch('/api/subscription/chargily/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const payload = await res.json().catch(() => null);
+      if (res.status === 503) {
+        setChargilyMessage("Le paiement en ligne n'est pas encore activé. Utilisez le virement / CCP.");
+        return;
+      }
+      if (!res.ok || !payload?.checkoutUrl) {
+        throw new Error(payload?.error || 'Impossible de démarrer le paiement.');
+      }
+      window.location.href = payload.checkoutUrl;
+    } catch (chargilyError) {
+      setChargilyMessage(chargilyError instanceof Error ? chargilyError.message : 'Erreur de paiement en ligne.');
+    } finally {
+      setChargilyLoading(false);
     }
   };
 
@@ -322,11 +349,24 @@ export default function BoutiqueSubscriptionPanel({
           <CreditCard className="mx-auto h-8 w-8 text-luxury-gold" />
           <p className="text-sm text-white">Paiement en ligne CIB / Edahabia</p>
           <p className="text-xs text-zinc-400">
-            Le paiement instantané par carte est en cours d’activation. En attendant, utilisez le virement / CCP.
+            Réglez instantanément {SUBSCRIPTION_PRICE_DZD} DA par carte CIB ou Edahabia via Chargily. L’abonnement
+            s’active automatiquement après le paiement.
           </p>
-          <span className="inline-block rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[9px] font-mono uppercase tracking-widest text-amber-400">
-            Bientôt disponible
-          </span>
+          <button
+            type="button"
+            onClick={handleChargily}
+            disabled={chargilyLoading}
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded bg-luxury-gold px-4 text-xs font-bold uppercase tracking-widest text-black transition-colors hover:bg-[#E7C85C] disabled:opacity-50"
+          >
+            {chargilyLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+            {chargilyLoading ? 'Redirection…' : `Payer ${SUBSCRIPTION_PRICE_DZD} DA en ligne`}
+          </button>
+          {chargilyMessage && (
+            <p className="flex items-start gap-2 rounded border border-amber-900/50 bg-amber-950/20 p-2.5 text-left text-xs text-amber-300">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              {chargilyMessage}
+            </p>
+          )}
         </div>
       )}
 

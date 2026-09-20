@@ -59,7 +59,9 @@ import { getAccountBlockingMessage, normalizedAccountStatus } from "./src/utils/
 import { getChatAccessError } from "./src/utils/chatAccess";
 import { buildBoutiqueAdminTransition } from "./src/utils/adminTransitions";
 import { prepareBoutiqueRegistration } from "./src/utils/boutiqueRegistration";
-import { prepareManualPayment } from "./src/utils/subscriptionRules";
+import { prepareManualPayment, canBoutiqueOperate, SUBSCRIPTION_PRICE_DZD } from "./src/utils/subscriptionRules";
+import { readChargilyConfig, createChargilyCheckout, verifyChargilySignature } from "./src/server/chargily";
+import { createChargilyPendingPaymentAdmin, activateChargilyPaymentAdmin } from "./src/server/adminSubscriptions";
 import { decideAppCheckAccess, parseAppCheckMode } from './src/utils/appCheckPolicy';
 import { isStoreHubOriginAllowed, parseAllowedOrigins } from './src/utils/corsPolicy';
 
@@ -78,10 +80,21 @@ app.use(cors({
     callback(new Error(`Origine non autorisée : ${origin}`));
   },
 }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req: any, _res, buf) => {
+    // Corps brut conservé pour vérifier la signature HMAC du webhook Chargily.
+    req.rawBody = buf?.toString('utf-8') || '';
+  },
+}));
 
 const appCheckMode = parseAppCheckMode(process.env.STOREHUB_APP_CHECK_MODE);
 let appCheckWarningCount = 0;
+
+// Quand true, une boutique dont l'abonnement n'est pas actif passe en lecture
+// seule (impossible de publier/modifier des produits). Désactivé par défaut
+// le temps de communiquer le nouveau modèle aux boutiques existantes.
+const subscriptionEnforced = process.env.STOREHUB_SUBSCRIPTION_ENFORCED === 'true';
 
 function readFirebaseProjectId(): string {
   const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -100,7 +113,12 @@ async function verifyAppCheckToken(token: string): Promise<void> {
 }
 
 app.use('/api', async (req, res, next) => {
-  if (req.path === '/health' || req.path === '/firebase-config' || appCheckMode === 'off') {
+  if (
+    req.path === '/health'
+    || req.path === '/firebase-config'
+    || req.path === '/subscription/chargily/webhook'
+    || appCheckMode === 'off'
+  ) {
     next();
     return;
   }
@@ -372,6 +390,7 @@ app.post("/api/products", async (req, res) => {
     }
 
     await assertBoutiqueOwner(product.boutiqueId, idToken);
+    await assertBoutiqueCanSell(product.boutiqueId, idToken);
     const normalized = normalizeProductForPersistence(product);
     if ('error' in normalized) return res.status(400).json({ error: normalized.error });
     const normalizedProduct = {
@@ -395,6 +414,7 @@ app.put("/api/products/:id", async (req, res) => {
     const currentProduct = await getProductById(id);
     if (!currentProduct) return res.status(404).json({ error: "Article introuvable." });
     await assertBoutiqueOwner(currentProduct.boutiqueId, idToken);
+    await assertBoutiqueCanSell(currentProduct.boutiqueId, idToken);
     if (hasTemporaryProductImage(req.body?.images)) {
       return res.status(400).json({ error: "Les images temporaires doivent être envoyées dans Firebase Storage avant l’enregistrement." });
     }
@@ -1231,6 +1251,92 @@ app.put("/api/admin/subscription/payments/:id/review", async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// Abonnement boutique : paiement en ligne Chargily (CIB / Edahabia)
+// -------------------------------------------------------------
+
+function storehubPublicUrl(): string {
+  return (process.env.STOREHUB_PUBLIC_URL || process.env.VITE_PUBLIC_URL || "https://store-hub-2026.web.app").replace(/\/+$/, "");
+}
+
+// La boutique lance un paiement en ligne : on crée un checkout Chargily.
+app.post("/api/subscription/chargily/checkout", async (req, res) => {
+  try {
+    const config = readChargilyConfig();
+    if (!config) {
+      return res.status(503).json({ error: "Le paiement en ligne n'est pas encore configuré. Utilisez le virement." });
+    }
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    const { account, profile } = await assertApprovedAccount(idToken, UserRole.BOUTIQUE);
+    const boutiqueId = profile.boutiqueId;
+    if (!boutiqueId) {
+      return res.status(400).json({ error: "Aucune boutique n'est associée à ce compte." });
+    }
+    const boutique = await getBoutiqueById(boutiqueId);
+    if (!boutique || boutique.ownerId !== account.uid) {
+      return res.status(403).json({ error: "Cette boutique est limitée à son propriétaire." });
+    }
+
+    const paymentId = `pay_${randomUUID()}`;
+    const publicUrl = storehubPublicUrl();
+    const checkout = await createChargilyCheckout(config, {
+      amountDzd: SUBSCRIPTION_PRICE_DZD,
+      successUrl: `${publicUrl}/?subscription=success`,
+      failureUrl: `${publicUrl}/?subscription=failure`,
+      webhookEndpoint: `${publicUrl}/api/subscription/chargily/webhook`,
+      description: `Abonnement StoreHub — ${boutique.name}`,
+      metadata: { paymentId, boutiqueId, ownerId: account.uid },
+    });
+
+    const now = new Date().toISOString();
+    const payment: SubscriptionPayment = {
+      id: paymentId,
+      boutiqueId,
+      ownerId: account.uid,
+      boutiqueName: boutique.name,
+      amountDzd: SUBSCRIPTION_PRICE_DZD,
+      method: "chargily",
+      status: "pending",
+      submittedAt: now,
+      chargilyCheckoutId: checkout.id,
+    };
+    await createChargilyPendingPaymentAdmin(payment);
+
+    res.status(201).json({ checkoutUrl: checkout.checkoutUrl, paymentId });
+  } catch (error: any) {
+    console.error("Error creating Chargily checkout:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de démarrer le paiement en ligne." });
+  }
+});
+
+// Webhook Chargily : confirme le paiement et active l'abonnement.
+app.post("/api/subscription/chargily/webhook", async (req: any, res) => {
+  try {
+    const config = readChargilyConfig();
+    if (!config) return res.status(503).json({ error: "Chargily non configuré." });
+
+    const signature = req.header("signature") || req.header("Signature");
+    const rawBody = typeof req.rawBody === "string" ? req.rawBody : JSON.stringify(req.body || {});
+    if (!verifyChargilySignature(config, rawBody, signature)) {
+      return res.status(403).json({ error: "Signature invalide." });
+    }
+
+    const event = req.body;
+    if (event?.type === "checkout.paid" || event?.type === "checkout.completed") {
+      const checkoutId = event?.data?.id ? String(event.data.id) : "";
+      if (checkoutId) {
+        await activateChargilyPaymentAdmin(checkoutId);
+      }
+    }
+    // Toujours 200 pour éviter que Chargily ne réessaie indéfiniment.
+    res.status(200).json({ received: true });
+  } catch (error: any) {
+    console.error("Error handling Chargily webhook:", error);
+    res.status(200).json({ received: true });
+  }
+});
+
+// -------------------------------------------------------------
 // Live Client-Boutique Chat API Routes
 // -------------------------------------------------------------
 
@@ -1299,6 +1405,27 @@ async function assertBoutiqueOwner(boutiqueId: string, idToken: string): Promise
   if (boutique.ownerId !== account.uid) {
     const error: any = new Error("Cette boutique est limitée à son propriétaire.");
     error.status = 403;
+    throw error;
+  }
+}
+
+/** Bloque la publication si l'abonnement de la boutique n'est pas actif.
+ * Les boutiques créées avant l'abonnement (sans champ subscription) gardent
+ * l'accès tant que l'admin ne les a pas migrées. */
+async function assertBoutiqueCanSell(boutiqueId: string, idToken: string): Promise<void> {
+  if (!subscriptionEnforced) return;
+  const boutique = await getBoutiqueById(boutiqueId);
+  if (!boutique) {
+    const error: any = new Error("Boutique introuvable.");
+    error.status = 404;
+    throw error;
+  }
+  if (!boutique.subscription) return;
+  if (!canBoutiqueOperate(boutique, new Date().toISOString())) {
+    const error: any = new Error(
+      "Votre abonnement n'est pas actif. Réglez l'abonnement mensuel pour publier ou modifier vos articles.",
+    );
+    error.status = 402;
     throw error;
   }
 }
