@@ -1,0 +1,150 @@
+==========================================================
+  STOREHUB — GUIDE DE DEPLOIEMENT (ABONNEMENT BOUTIQUE)
+  Pour quelqu'un qui le fait pour la premiere fois
+  Mis a jour : 2026-09-20
+==========================================================
+
+Ce guide explique comment mettre en ligne la nouvelle
+fonctionnalite : l'abonnement boutique (2000 DA / mois,
+virement manuel + paiement carte Chargily).
+
+Chaque etape dit : QUOI faire, COMMENT, et COMMENT SAVOIR
+que c'est reussi.
+
+
+----------------------------------------------------------
+AVANT DE COMMENCER (une seule fois)
+----------------------------------------------------------
+
+1. Installer Node.js version 22 ou plus :
+   https://nodejs.org  (bouton "LTS")
+
+2. Installer l'outil Firebase. Ouvrir un terminal et taper :
+   npm install -g firebase-tools
+
+3. Se connecter au compte Google qui gere le projet
+   "store-hub-2026" :
+   firebase login
+   -> une page web s'ouvre, choisir le compte, cliquer
+      "Autoriser". C'est bon quand le terminal dit "Success".
+
+4. Toujours travailler DANS le dossier du projet. Au debut
+   de chaque session, taper :
+   cd "G:\Autres ordinateurs\Mon ordinateur (1)\Projects\storehub"
+
+
+----------------------------------------------------------
+TACHE 1 — METTRE LES VRAIES COORDONNEES DE PAIEMENT
+----------------------------------------------------------
+
+POURQUOI : l'app montre a chaque boutique ou envoyer les
+2000 DA. Pour l'instant ce sont de faux numeros (0000...).
+
+COMMENT :
+  1. Ouvrir le fichier :
+     src/config/subscription.ts
+  2. Remplacer les valeurs :
+     - beneficiary   -> nom du compte (ex: "IA UNIVER")
+     - ccpNumber     -> numero CCP
+     - ripBaridiMob  -> RIP BaridiMob
+     - bankRib       -> RIB bancaire (vide si aucun)
+     - contactPhone  -> numero de telephone de contact
+     - contactEmail  -> email de contact
+  3. Enregistrer.
+
+REUSSI QUAND : les vrais numeros sont dans le fichier.
+
+
+----------------------------------------------------------
+TACHE 2 — PUBLIER L'APPLICATION (DEPLOIEMENT)
+----------------------------------------------------------
+
+POURQUOI : le code est sur l'ordinateur. Le deploiement
+l'envoie sur Internet pour que l'app marche vraiment.
+
+COMMENT : une seule commande (construction + envoi) :
+
+   npm run build:firebase && firebase deploy --project store-hub-2026
+
+Ca prend 2 a 5 minutes. Ne pas fermer le terminal.
+
+REUSSI QUAND : le terminal affiche a la fin :
+   + Deploy complete!
+   Hosting URL: https://store-hub-2026.web.app
+
+SI ERREUR "Invalid package config" ou fichier vide :
+   C'est Google Drive qui vide les fichiers. Solution :
+   deployer depuis le dossier de secours deja pret :
+      cd C:\Users\touka\storehub-deploy
+      firebase deploy --project store-hub-2026
+   (Ce dossier contient une copie propre du backend.)
+
+
+----------------------------------------------------------
+TACHE 3 — SAUVEGARDER LE CODE EN LIGNE (GITHUB)
+----------------------------------------------------------
+
+POURQUOI : copie de securite. Si l'ordinateur casse,
+rien n'est perdu.
+
+COMMENT :
+   git push origin main
+
+REUSSI QUAND : le terminal affiche "main -> main" sans erreur.
+
+
+----------------------------------------------------------
+TACHE 4 — TESTER QUE CA MARCHE
+----------------------------------------------------------
+
+1. Ouvrir https://store-hub-2026.web.app
+2. Se connecter avec un COMPTE BOUTIQUE.
+   -> Dans le profil de la boutique, une section
+      "Abonnement boutique" doit apparaitre, avec les
+      coordonnees de paiement + un formulaire pour envoyer
+      le recu du virement.
+3. Se connecter avec le COMPTE ADMIN.
+   -> Onglet "Paiements & Abonnements" : les paiements
+      envoyes par les boutiques apparaissent, avec les
+      boutons Valider / Refuser.
+
+REUSSI QUAND : une boutique envoie un paiement, l'admin le
+valide, et l'abonnement passe "actif".
+
+
+----------------------------------------------------------
+TACHE 5 (PLUS TARD) — PAIEMENT PAR CARTE (CHARGILY)
+----------------------------------------------------------
+
+Quand un compte marchand Chargily sera ouvert (chargily.com) :
+  1. Recuperer la cle secrete Chargily.
+  2. L'ajouter dans les variables d'environnement de la
+     fonction Firebase (cle : CHARGILY_SECRET_KEY).
+  3. Redeployer (Tache 2).
+Le bouton "Payer en ligne CIB/Edahabia" s'activera tout seul.
+
+
+----------------------------------------------------------
+TACHE 6 (PLUS TARD) — RENDRE LE PAIEMENT OBLIGATOIRE
+----------------------------------------------------------
+
+Au debut, les boutiques ne sont PAS bloquees meme sans payer
+(pour ne pas les facher pendant le lancement).
+
+Quand tout le monde est prevenu :
+  1. Mettre la variable d'environnement de la fonction :
+     STOREHUB_SUBSCRIPTION_ENFORCED = true
+  2. Redeployer (Tache 2).
+La, une boutique qui n'a pas paye ne peut plus ajouter ni
+modifier ses produits (lecture seule).
+
+
+----------------------------------------------------------
+LIENS UTILES
+----------------------------------------------------------
+- App en ligne     : https://store-hub-2026.web.app
+- Console Firebase : https://console.firebase.google.com/project/store-hub-2026
+- Code GitHub      : https://github.com/nadtou/StoreHub
+
+Prix abonnement    : 2000 DA / mois (defini dans
+                     src/utils/subscriptionRules.ts)
