@@ -1162,7 +1162,6 @@ app.post("/api/subscription/payments", async (req, res) => {
       status: "pending",
       submittedAt: now,
       reference: prepared.value.reference,
-      proofUrl: prepared.value.proofUrl,
       proofPath: prepared.value.proofPath,
       senderNote: prepared.value.senderNote,
     };

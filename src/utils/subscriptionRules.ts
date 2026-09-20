@@ -114,7 +114,6 @@ export type PreparedManualPayment =
         method: 'bank_transfer';
         amountDzd: number;
         reference: string;
-        proofUrl: string;
         proofPath: string;
         senderNote: string;
       };
@@ -144,26 +143,17 @@ export function prepareManualPayment(
   if (reference.length < 3) {
     return { ok: false, error: 'La référence du virement est obligatoire (n° bordereau/reçu).' };
   }
-  const proofUrl = typeof input.proofUrl === 'string' ? input.proofUrl.trim() : '';
+  // Le justificatif est PRIVE : on ne stocke que son chemin Storage, valide
+  // pour cette boutique. L'admin genère l'URL signée à l'affichage.
   const proofPath = typeof input.proofPath === 'string' ? input.proofPath.trim() : '';
   const expectedPrefix = `subscription-proofs/${ownerUid}/${boutiqueId}/`;
-  if (!proofPath.startsWith(expectedPrefix)) {
+  if (!proofPath.startsWith(expectedPrefix) || proofPath.length <= expectedPrefix.length) {
     return { ok: false, error: 'Le justificatif ne correspond pas à cette boutique.' };
-  }
-  try {
-    const url = new URL(proofUrl);
-    if (url.protocol !== 'https:' || url.hostname !== 'firebasestorage.googleapis.com') throw new Error();
-    const markerIndex = url.pathname.indexOf('/o/');
-    if (markerIndex < 0) throw new Error();
-    const encodedObjectPath = url.pathname.slice(markerIndex + 3).split('/')[0];
-    if (decodeURIComponent(encodedObjectPath) !== proofPath) throw new Error();
-  } catch {
-    return { ok: false, error: 'Le justificatif doit être une image envoyée sur Firebase Storage.' };
   }
   const senderNote = typeof input.senderNote === 'string' ? input.senderNote.trim().slice(0, 500) : '';
   return {
     ok: true,
-    value: { method: 'bank_transfer', amountDzd: Math.floor(amountDzd), reference, proofUrl, proofPath, senderNote },
+    value: { method: 'bank_transfer', amountDzd: Math.floor(amountDzd), reference, proofPath, senderNote },
   };
 }
 

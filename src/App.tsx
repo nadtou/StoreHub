@@ -19,6 +19,7 @@ import Messagerie from './components/Messagerie';
 import BoutiquesList from './components/BoutiquesList';
 import QAAuditModal from './components/QAAuditModal';
 import BoutiqueAccountSettings, { BoutiqueSettingsInput } from './components/BoutiqueAccountSettings';
+import BoutiqueSubscriptionPanel from './components/BoutiqueSubscriptionPanel';
 import { UserPreferences, UserRole, Boutique, Product, ManualOrder } from './types';
 import { Home as HomeIcon, Search as SearchIcon, Heart, Sparkles, LayoutDashboard, UserCircle2, LogOut, Store, Zap, ArrowLeft, MessageSquare, FileCheck, BellRing, X } from 'lucide-react';
 import { initFirebase, uploadBoutiqueCover, uploadBoutiqueLogo, uploadClientAvatar, uploadProductImages } from './firebase';
@@ -192,6 +193,8 @@ export default function App() {
   const [followedBoutiqueIds, setFollowedBoutiqueIds] = useState<string[]>([]);
   const [followedBoutiquesLoading, setFollowedBoutiquesLoading] = useState(false);
   const catalogSessionKey = user?.uid ?? 'anonymous';
+  const [boutiqueRefreshTick, setBoutiqueRefreshTick] = useState(0);
+  const refreshBoutiques = () => setBoutiqueRefreshTick((tick) => tick + 1);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,7 +251,7 @@ export default function App() {
       }
     };
     fetchLiveData();
-  }, [catalogSessionKey]);
+  }, [catalogSessionKey, boutiqueRefreshTick]);
 
   // Real-time private chat unread count tracking
   const [unreadCount, setUnreadCount] = useState(0);
@@ -1188,10 +1191,17 @@ export default function App() {
                   </div>
 
                   {user.role === UserRole.BOUTIQUE && getUserBoutique(user, boutiques) && (
-                    <BoutiqueAccountSettings
-                      boutique={getUserBoutique(user, boutiques)!}
-                      onSave={handleBoutiqueSettingsSave}
-                    />
+                    <>
+                      <BoutiqueSubscriptionPanel
+                        boutique={getUserBoutique(user, boutiques)!}
+                        ownerUid={user.uid}
+                        onSubscriptionRefreshed={refreshBoutiques}
+                      />
+                      <BoutiqueAccountSettings
+                        boutique={getUserBoutique(user, boutiques)!}
+                        onSave={handleBoutiqueSettingsSave}
+                      />
+                    </>
                   )}
 
                   {/* Real-time Customer-Boutique Chat Threads list */}

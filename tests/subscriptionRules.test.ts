@@ -83,11 +83,10 @@ test('daysUntilExpiry renvoie les jours entiers restants', () => {
 test('prepareManualPayment valide montant, référence et chemin de preuve', () => {
   const uid = 'owner-1';
   const boutiqueId = 'boutique_owner-1';
-  const goodPath = `subscription-proofs/${uid}/${boutiqueId}/recu.jpg`;
-  const goodUrl = `https://firebasestorage.googleapis.com/v0/b/x/o/${encodeURIComponent(goodPath)}?alt=media`;
+  const goodPath = `subscription-proofs/${uid}/${boutiqueId}/proof-123.jpg`;
 
   const ok = prepareManualPayment(
-    { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-12345', proofUrl: goodUrl, proofPath: goodPath },
+    { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-12345', proofPath: goodPath },
     uid,
     boutiqueId,
   );
@@ -95,12 +94,13 @@ test('prepareManualPayment valide montant, référence et chemin de preuve', () 
   if (ok.ok) {
     assert.equal(ok.value.amountDzd, SUBSCRIPTION_PRICE_DZD);
     assert.equal(ok.value.reference, 'BR-12345');
+    assert.equal(ok.value.proofPath, goodPath);
   }
 
   // Montant trop bas
   assert.equal(
     prepareManualPayment(
-      { method: 'bank_transfer', amountDzd: 500, reference: 'BR-1', proofUrl: goodUrl, proofPath: goodPath },
+      { method: 'bank_transfer', amountDzd: 500, reference: 'BR-1', proofPath: goodPath },
       uid,
       boutiqueId,
     ).ok,
@@ -110,7 +110,7 @@ test('prepareManualPayment valide montant, référence et chemin de preuve', () 
   // Référence absente
   assert.equal(
     prepareManualPayment(
-      { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: '', proofUrl: goodUrl, proofPath: goodPath },
+      { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: '', proofPath: goodPath },
       uid,
       boutiqueId,
     ).ok,
@@ -118,11 +118,10 @@ test('prepareManualPayment valide montant, référence et chemin de preuve', () 
   );
 
   // Chemin appartenant à une autre boutique
-  const otherPath = `subscription-proofs/autre/${boutiqueId}/recu.jpg`;
-  const otherUrl = `https://firebasestorage.googleapis.com/v0/b/x/o/${encodeURIComponent(otherPath)}?alt=media`;
+  const otherPath = `subscription-proofs/autre/${boutiqueId}/proof-1.jpg`;
   assert.equal(
     prepareManualPayment(
-      { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-1', proofUrl: otherUrl, proofPath: otherPath },
+      { method: 'bank_transfer', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-1', proofPath: otherPath },
       uid,
       boutiqueId,
     ).ok,
@@ -132,7 +131,7 @@ test('prepareManualPayment valide montant, référence et chemin de preuve', () 
   // Méthode non gérée par ce chemin (chargily passe ailleurs)
   assert.equal(
     prepareManualPayment(
-      { method: 'chargily', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-1', proofUrl: goodUrl, proofPath: goodPath },
+      { method: 'chargily', amountDzd: SUBSCRIPTION_PRICE_DZD, reference: 'BR-1', proofPath: goodPath },
       uid,
       boutiqueId,
     ).ok,

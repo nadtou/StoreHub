@@ -117,11 +117,11 @@ service cloud.firestore {
       let data = request.resource.data;
       return data.keys().hasAll([
           "id", "boutiqueId", "ownerId", "boutiqueName", "amountDzd",
-          "method", "status", "submittedAt", "reference", "proofUrl", "proofPath"
+          "method", "status", "submittedAt", "reference", "proofPath"
         ])
         && data.keys().hasOnly([
           "id", "boutiqueId", "ownerId", "boutiqueName", "amountDzd",
-          "method", "status", "submittedAt", "reference", "proofUrl",
+          "method", "status", "submittedAt", "reference",
           "proofPath", "senderNote"
         ])
         && data.id == paymentId

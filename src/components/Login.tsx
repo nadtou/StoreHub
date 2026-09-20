@@ -1523,11 +1523,21 @@ export default function Login({ onLogin }: LoginProps) {
                 </div>
               </div>
 
+              {/* Info abonnement boutique */}
+              <div className="mt-6 rounded-xl border border-[#C5A850]/40 bg-[#C5A850]/8 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#B08D2E]">Abonnement boutique</p>
+                <p className="mt-2 text-xs leading-relaxed text-zinc-600">
+                  Après validation de votre dossier par l’administration, l’activation de votre vitrine coûte
+                  <span className="font-semibold text-[#8C6B1C]"> 2000 DA / mois</span> (virement CCP/BaridiMob ou
+                  paiement en ligne CIB/Edahabia). Le paiement se règle depuis votre console une fois la boutique approuvée.
+                </p>
+              </div>
+
               {/* Terms Checkbox and Create Account Button */}
               <div className="pt-4 space-y-6">
                 <label className="flex items-start gap-3 cursor-pointer text-xs sm:text-sm text-zinc-600 font-light select-none">
-                  <input 
-                    type="checkbox" 
+                  <input
+                    type="checkbox"
                     checked={acceptedTerms}
                     onChange={e => setAcceptedTerms(e.target.checked)}
                     className="w-4 h-4 mt-0.5 rounded border-[#E3DDD0] text-[#C5A850] focus:ring-[#C5A850] accent-[#C5A850] cursor-pointer"

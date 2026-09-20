@@ -225,6 +225,44 @@ export async function uploadBoutiqueVerificationDocument(
   };
 }
 
+export async function uploadSubscriptionProof(
+  ownerId: string,
+  boutiqueId: string,
+  file: File,
+): Promise<UploadedStorageFile> {
+  if (file.size <= 0 || file.size > MAX_BOUTIQUE_DOCUMENT_BYTES) {
+    throw new Error('Le justificatif doit peser au maximum 5 Mo.');
+  }
+  const extension = getVerificationDocumentExtension(file);
+  const { storage: firebaseStorage } = await initFirebase();
+  const proofRef = storageRef(
+    firebaseStorage,
+    `subscription-proofs/${ownerId}/${boutiqueId}/proof-${Date.now()}.${extension}`,
+  );
+  const snapshot = await uploadBytes(proofRef, file, {
+    contentType: file.type,
+    cacheControl: 'private,max-age=0,no-store',
+    contentDisposition: 'attachment',
+    customMetadata: {
+      ownerId,
+      boutiqueId,
+      documentType: 'subscription-proof',
+    },
+  });
+  return {
+    fullPath: snapshot.ref.fullPath,
+    name: file.name.slice(0, 180),
+    contentType: file.type,
+    size: file.size,
+  };
+}
+
+/** URL de téléchargement d'un justificatif (admin ou propriétaire). */
+export async function getSubscriptionProofUrl(fullPath: string): Promise<string> {
+  const { storage: firebaseStorage } = await initFirebase();
+  return getDownloadURL(storageRef(firebaseStorage, fullPath));
+}
+
 export async function deleteUploadedStorageFile(fullPath: string): Promise<void> {
   const normalizedPath = fullPath.trim();
   if (!normalizedPath) return;

@@ -3,6 +3,8 @@ import { firebaseAuthenticatedFetch } from '../utils/firebaseAuthenticatedFetch'
 import { deleteUploadedStorageFile, getSecureStorageFileUrl } from '../firebase';
 import { Boutique, ModerationNote, ModerationNoteSeverity, Product, UserProfile, UserRole } from '../types';
 import FennecMascot from './FennecMascot';
+import AdminSubscriptionPayments from './AdminSubscriptionPayments';
+import { CreditCard } from 'lucide-react';
 import { 
   Building2, 
   ShoppingBag, 
@@ -48,7 +50,7 @@ interface AdminConsoleProps {
 }
 
 export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, onBack }: AdminConsoleProps) {
-  const [activeTab, setActiveTab] = useState<'stats' | 'boutiques' | 'products' | 'users' | 'documents' | 'audit'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'boutiques' | 'products' | 'users' | 'documents' | 'audit' | 'payments'>('stats');
   const [boutiques, setBoutiques] = useState<Boutique[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -662,6 +664,16 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
         setSelectedModerationProductId(null);
         setActiveTab('products');
       }
+    },
+    {
+      id: 'payments',
+      title: 'Paiements & Abonnements',
+      category: 'Facturation Boutiques',
+      description: 'Validez les virements des boutiques et prolongez leurs abonnements mensuels.',
+      icon: CreditCard,
+      badge: 'Virements & CIB',
+      badgeStyle: 'bg-[#D4AF37]/10 text-[#D4AF37] border-[#D4AF37]/30',
+      action: () => setActiveTab('payments')
     },
     {
       id: 'qa-agents',
@@ -1592,6 +1604,10 @@ export default function AdminConsole({ onLogout, onOpenQA, onNavigateToStylist, 
                     )}
                   </section>
                 </div>
+              )}
+
+              {activeTab === 'payments' && (
+                <AdminSubscriptionPayments />
               )}
 
               {/* TAB 6: COMPLETE BOUTIQUE APPLICATION */}
