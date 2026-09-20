@@ -113,6 +113,40 @@ service cloud.firestore {
       allow delete: if ownsBoutique(resource.data.boutiqueId) || isAdmin();
     }
 
+    function validNewSubscriptionPayment(paymentId) {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          "id", "boutiqueId", "ownerId", "boutiqueName", "amountDzd",
+          "method", "status", "submittedAt", "reference", "proofUrl", "proofPath"
+        ])
+        && data.keys().hasOnly([
+          "id", "boutiqueId", "ownerId", "boutiqueName", "amountDzd",
+          "method", "status", "submittedAt", "reference", "proofUrl",
+          "proofPath", "senderNote"
+        ])
+        && data.id == paymentId
+        && data.ownerId == request.auth.uid
+        && data.boutiqueId == "boutique_" + request.auth.uid
+        && ownsBoutique(data.boutiqueId)
+        && data.method == "bank_transfer"
+        && data.status == "pending"
+        && data.amountDzd is int
+        && data.amountDzd >= 2000
+        && data.reference is string
+        && data.reference.size() >= 3
+        && data.proofPath.matches(
+          "subscription-proofs/" + request.auth.uid + "/boutique_" + request.auth.uid + "/.*"
+        );
+    }
+
+    // Paiements d'abonnement : la boutique dépose, l'admin valide.
+    match /subscriptionPayments/{paymentId} {
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if signedIn() && validNewSubscriptionPayment(paymentId);
+      allow update, delete: if isAdmin();
+    }
+
     match /users/{userId} {
       allow read: if (signedIn() && request.auth.uid == userId) || isAdmin();
       allow create: if signedIn()

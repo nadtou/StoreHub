@@ -97,25 +97,31 @@ export function calculateDeliveredStock(
   stock: number | undefined,
   quantity: number | undefined,
 ): { changed: false } | { changed: true; remainingStock: number; isAvailable: boolean } {
-  if (previousStatus === 'livre' || nextStatus !== 'livre') return { changed: false };
+  const wasDelivered = previousStatus === 'livre';
+  const willBeDelivered = nextStatus === 'livre';
+  if (wasDelivered === willBeDelivered) return { changed: false };
+
   const safeQuantity = Math.max(1, Math.floor(Number(quantity) || 1));
-  const safeStock = Number.isFinite(Number(stock)) ? Math.max(0, Number(stock)) : 1;
-  if (safeStock < safeQuantity) {
-    throw new Error("Stock insuffisant pour marquer cette commande comme livrée.");
+  const safeStock = Number.isFinite(Number(stock)) ? Math.max(0, Number(stock)) : 0;
+
+  if (willBeDelivered) {
+    if (safeStock < safeQuantity) {
+      throw new Error("Stock insuffisant pour marquer cette commande comme livrée.");
+    }
+    const remainingStock = safeStock - safeQuantity;
+    return { changed: true, remainingStock, isAvailable: remainingStock > 0 };
   }
-  const remainingStock = safeStock - safeQuantity;
+
+  // livre -> en_attente / en_cours : la boutique gère manuellement, on remet le stock.
+  const remainingStock = safeStock + safeQuantity;
   return { changed: true, remainingStock, isAvailable: remainingStock > 0 };
 }
 
-const ORDER_STATUS_RANK: Record<ManualOrder['status'], number> = {
-  en_attente: 0,
-  en_cours: 1,
-  livre: 2,
-};
-
 export function isOrderStatusTransitionAllowed(
-  previousStatus: ManualOrder['status'],
-  nextStatus: ManualOrder['status'],
+  _previousStatus: ManualOrder['status'],
+  _nextStatus: ManualOrder['status'],
 ): boolean {
-  return ORDER_STATUS_RANK[nextStatus] >= ORDER_STATUS_RANK[previousStatus];
+  // Livraison gérée manuellement : la boutique peut réattribuer n'importe
+  // quel statut, y compris repasser une commande livrée en attente ou en cours.
+  return true;
 }

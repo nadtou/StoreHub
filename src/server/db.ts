@@ -17,9 +17,10 @@ import {
 } from "firebase/firestore";
 import fs from "fs";
 import path from "path";
-import { Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteStatus, Product, UserProfile, VisibilityPoint } from "../types";
+import { Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteStatus, Product, SubscriptionPayment, UserProfile, VisibilityPoint } from "../types";
 import { ensureRequiredClothingSizes, generateShoeSizes, isShoeCategory } from "../utils/productSizes";
 import { calculateDeliveredStock, isOrderStatusTransitionAllowed } from "../utils/commerceRules";
+import { applyApprovedPayment } from "../utils/subscriptionRules";
 
 // Load Firebase configuration from the auto-generated config file
 let firebaseConfig: any = {};
@@ -666,6 +667,132 @@ export async function updateModerationNoteStatusAuthenticated(
   return note;
 }
 
+// -------------------------------------------------------------
+// Abonnements boutique : paiements + activation
+// -------------------------------------------------------------
+
+export async function createSubscriptionPaymentAuthenticated(
+  payment: SubscriptionPayment,
+  idToken: string,
+): Promise<void> {
+  await commitAuthenticatedWrites([{
+    update: {
+      name: firestoreDocumentName("subscriptionPayments", payment.id),
+      fields: firestoreFieldsFromObject(payment as unknown as Record<string, any>),
+    },
+    currentDocument: { exists: false },
+  }], idToken);
+}
+
+export async function getSubscriptionPaymentsForBoutiqueAuthenticated(
+  boutiqueId: string,
+  idToken: string,
+): Promise<SubscriptionPayment[]> {
+  const payments = await queryAuthenticatedDocuments<SubscriptionPayment>(
+    "subscriptionPayments",
+    "boutiqueId",
+    boutiqueId,
+    idToken,
+  );
+  return payments.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+}
+
+export async function getAllSubscriptionPaymentsAuthenticated(
+  idToken: string,
+): Promise<SubscriptionPayment[]> {
+  const rows = await secureFirestoreRequest(`${firestoreRestBase}:runQuery`, idToken, {
+    method: "POST",
+    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: "subscriptionPayments" }] } }),
+  });
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row.document)
+    .map((row) => objectFromFirestoreDocument<SubscriptionPayment>(row.document))
+    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+}
+
+/** Applique la décision admin sur un paiement et, si approuvé, prolonge
+ * l'abonnement de la boutique en un seul commit. */
+export async function reviewSubscriptionPaymentAuthenticated(
+  paymentId: string,
+  decision: { approve: boolean; reviewerUid: string; rejectionReason?: string },
+  idToken: string,
+): Promise<{ payment: SubscriptionPayment; boutique?: Boutique }> {
+  const paymentDocument = await getAuthenticatedRawDocument("subscriptionPayments", paymentId, idToken);
+  if (!paymentDocument) {
+    const error: any = new Error("Paiement introuvable.");
+    error.status = 404;
+    throw error;
+  }
+  const currentPayment = objectFromFirestoreDocument<SubscriptionPayment>(paymentDocument);
+  if (currentPayment.status !== "pending") {
+    const error: any = new Error("Ce paiement a déjà été traité.");
+    error.status = 409;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+
+  if (!decision.approve) {
+    const rejected: SubscriptionPayment = {
+      ...currentPayment,
+      status: "rejected",
+      reviewedAt: now,
+      reviewedBy: decision.reviewerUid,
+      rejectionReason: (decision.rejectionReason || "Justificatif refusé.").slice(0, 500),
+    };
+    await commitAuthenticatedWrites([{
+      update: {
+        name: firestoreDocumentName("subscriptionPayments", paymentId),
+        fields: firestoreFieldsFromObject(rejected as unknown as Record<string, any>),
+      },
+      currentDocument: { updateTime: paymentDocument.updateTime },
+    }], idToken);
+    return { payment: rejected };
+  }
+
+  const boutiqueDocument = await getAuthenticatedRawDocument("boutiques", currentPayment.boutiqueId, idToken);
+  if (!boutiqueDocument) {
+    const error: any = new Error("Boutique introuvable pour ce paiement.");
+    error.status = 404;
+    throw error;
+  }
+  const currentBoutique = objectFromFirestoreDocument<Boutique>(boutiqueDocument);
+  const { subscription, periodStart, periodEnd } = applyApprovedPayment(
+    currentBoutique.subscription,
+    currentPayment.method,
+    now,
+  );
+
+  const approved: SubscriptionPayment = {
+    ...currentPayment,
+    status: "approved",
+    reviewedAt: now,
+    reviewedBy: decision.reviewerUid,
+    periodStart,
+    periodEnd,
+  };
+  const updatedBoutique: Boutique = { ...currentBoutique, subscription, updatedAt: now };
+
+  await commitAuthenticatedWrites([
+    {
+      update: {
+        name: firestoreDocumentName("subscriptionPayments", paymentId),
+        fields: firestoreFieldsFromObject(approved as unknown as Record<string, any>),
+      },
+      currentDocument: { updateTime: paymentDocument.updateTime },
+    },
+    {
+      update: {
+        name: firestoreDocumentName("boutiques", currentPayment.boutiqueId),
+        fields: firestoreFieldsFromObject(updatedBoutique as unknown as Record<string, any>),
+      },
+      currentDocument: { updateTime: boutiqueDocument.updateTime },
+    },
+  ], idToken);
+
+  return { payment: approved, boutique: updatedBoutique };
+}
+
 export async function saveProductAuthenticated(product: Product, idToken: string): Promise<void> {
   await writeAuthenticatedDocument("products", product.id, product as unknown as Record<string, any>, idToken);
 }
@@ -984,7 +1111,7 @@ export async function updateOrderAuthenticated(
   if (!current || current.boutiqueId !== boutiqueId) throw new Error("Order not found");
   const order = { ...current, ...updates, id: orderId, boutiqueId: current.boutiqueId };
   if (!isOrderStatusTransitionAllowed(current.status, order.status)) {
-    const error: any = new Error("Une commande livrée ne peut pas revenir à un statut antérieur.");
+    const error: any = new Error("Transition de statut non autorisée.");
     error.status = 409;
     throw error;
   }
@@ -997,8 +1124,9 @@ export async function updateOrderAuthenticated(
     currentDocument: { updateTime: currentDocument.updateTime },
   }];
 
-  const becameDelivered = current.status !== "livre" && order.status === "livre";
-  if (becameDelivered && current.productId) {
+  const statusChanged = current.status !== order.status;
+  const affectsStock = statusChanged && (current.status === "livre" || order.status === "livre");
+  if (affectsStock && current.productId) {
     const productDocument = await getAuthenticatedRawDocument("products", current.productId, idToken);
     if (!productDocument) {
       const error: any = new Error("Le produit associé à cette commande est introuvable.");
@@ -1016,8 +1144,8 @@ export async function updateOrderAuthenticated(
     let stockChange: ReturnType<typeof calculateDeliveredStock>;
     try {
       stockChange = calculateDeliveredStock(current.status, order.status, product.stock, current.quantity);
-    } catch (stockError) {
-      const error: any = new Error("Stock insuffisant pour marquer cette commande comme livrée.");
+    } catch (stockError: any) {
+      const error: any = new Error(stockError?.message || "Transition de stock refusée.");
       error.status = 409;
       throw error;
     }

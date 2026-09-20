@@ -74,6 +74,22 @@ service firebase.storage {
       allow delete: if signedIn() && (request.auth.uid == userId || isAdminClaim());
     }
 
+    // Justificatifs de paiement d'abonnement (virement bancaire).
+    // Privés : lisibles par la boutique proprietaire ou un admin.
+    match /subscription-proofs/{ownerId}/{boutiqueId}/{fileName} {
+      allow read: if signedIn() && (request.auth.uid == ownerId || isAdminClaim());
+      allow create: if signedIn()
+        && request.auth.uid == ownerId
+        && boutiqueId == "boutique_" + ownerId
+        && fileName.matches('proof-[0-9]+\\.(jpg|jpeg|png|webp|pdf)')
+        && request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/jpeg|image/png|image/webp');
+      allow update: if false;
+      allow delete: if signedIn() && (request.auth.uid == ownerId || isAdminClaim());
+    }
+
     match /users/{userId}/avatars/{fileName} {
       allow read: if true;
       allow create, update: if signedIn()

@@ -44,8 +44,12 @@ import {
   getModerationNotesForBoutiqueAuthenticated,
   saveModerationNoteAuthenticated,
   updateModerationNoteStatusAuthenticated,
+  createSubscriptionPaymentAuthenticated,
+  getSubscriptionPaymentsForBoutiqueAuthenticated,
+  getAllSubscriptionPaymentsAuthenticated,
+  reviewSubscriptionPaymentAuthenticated,
 } from "./src/server/db";
-import { AccountApprovalStatus, Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteSeverity, UserProfile, UserRole } from "./src/types";
+import { AccountApprovalStatus, Boutique, BoutiqueApplication, ManualOrder, ModerationNote, ModerationNoteSeverity, SubscriptionPayment, UserProfile, UserRole } from "./src/types";
 import {
   calculateDeliveredStock,
   getReservationSelectionError,
@@ -55,6 +59,7 @@ import { getAccountBlockingMessage, normalizedAccountStatus } from "./src/utils/
 import { getChatAccessError } from "./src/utils/chatAccess";
 import { buildBoutiqueAdminTransition } from "./src/utils/adminTransitions";
 import { prepareBoutiqueRegistration } from "./src/utils/boutiqueRegistration";
+import { prepareManualPayment } from "./src/utils/subscriptionRules";
 import { decideAppCheckAccess, parseAppCheckMode } from './src/utils/appCheckPolicy';
 import { isStoreHubOriginAllowed, parseAllowedOrigins } from './src/utils/corsPolicy';
 
@@ -1119,6 +1124,110 @@ app.delete("/api/admin/products/:id", async (req, res) => {
   } catch (error: any) {
     console.error("Error deleting product:", error);
     res.status(Number(error?.status) || 500).json({ error: error.message || "Failed to delete product" });
+  }
+});
+
+// -------------------------------------------------------------
+// Abonnement boutique : virement manuel + revue admin
+// -------------------------------------------------------------
+
+// La boutique déclare un paiement par virement (avec justificatif).
+app.post("/api/subscription/payments", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    const { account, profile } = await assertApprovedAccount(idToken, UserRole.BOUTIQUE);
+    const boutiqueId = profile.boutiqueId;
+    if (!boutiqueId) {
+      return res.status(400).json({ error: "Aucune boutique n'est associée à ce compte." });
+    }
+    const boutique = await getBoutiqueById(boutiqueId);
+    if (!boutique || boutique.ownerId !== account.uid) {
+      return res.status(403).json({ error: "Cette boutique est limitée à son propriétaire." });
+    }
+
+    const prepared = prepareManualPayment(req.body || {}, account.uid, boutiqueId);
+    if (prepared.ok !== true) {
+      return res.status(400).json({ error: prepared.error });
+    }
+
+    const now = new Date().toISOString();
+    const payment: SubscriptionPayment = {
+      id: `pay_${randomUUID()}`,
+      boutiqueId,
+      ownerId: account.uid,
+      boutiqueName: boutique.name,
+      amountDzd: prepared.value.amountDzd,
+      method: "bank_transfer",
+      status: "pending",
+      submittedAt: now,
+      reference: prepared.value.reference,
+      proofUrl: prepared.value.proofUrl,
+      proofPath: prepared.value.proofPath,
+      senderNote: prepared.value.senderNote,
+    };
+    await createSubscriptionPaymentAuthenticated(payment, idToken);
+    res.status(201).json({ message: "Paiement envoyé. En attente de validation par l'administration.", payment });
+  } catch (error: any) {
+    console.error("Error creating subscription payment:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible d'enregistrer le paiement." });
+  }
+});
+
+// Historique des paiements de la boutique connectée.
+app.get("/api/subscription/payments", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    const { profile } = await assertApprovedAccount(idToken, UserRole.BOUTIQUE);
+    if (!profile.boutiqueId) {
+      return res.status(400).json({ error: "Aucune boutique n'est associée à ce compte." });
+    }
+    const payments = await getSubscriptionPaymentsForBoutiqueAuthenticated(profile.boutiqueId, idToken);
+    res.json(payments);
+  } catch (error: any) {
+    console.error("Error listing subscription payments:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de charger les paiements." });
+  }
+});
+
+// Admin : tous les paiements (filtrable par statut côté client).
+app.get("/api/admin/subscription/payments", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    const payments = await getAllSubscriptionPaymentsAuthenticated(idToken);
+    res.json(payments);
+  } catch (error: any) {
+    console.error("Error listing all subscription payments:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de charger les paiements." });
+  }
+});
+
+// Admin : approuve ou refuse un paiement (approbation prolonge l'abonnement).
+app.put("/api/admin/subscription/payments/:id/review", async (req, res) => {
+  try {
+    const idToken = requireFirebaseIdToken(req, res);
+    if (!idToken) return;
+    await assertAdmin(idToken);
+    const reviewer = await getFirebaseAccountFromIdToken(idToken);
+    const { id } = req.params;
+    const approve = req.body?.approve === true;
+    const rejectionReason = typeof req.body?.rejectionReason === "string" ? req.body.rejectionReason : undefined;
+    const result = await reviewSubscriptionPaymentAuthenticated(
+      id,
+      { approve, reviewerUid: reviewer.uid, rejectionReason },
+      idToken,
+    );
+    res.json({
+      message: approve ? "Paiement validé, abonnement prolongé." : "Paiement refusé.",
+      payment: result.payment,
+      boutique: result.boutique,
+    });
+  } catch (error: any) {
+    console.error("Error reviewing subscription payment:", error);
+    res.status(Number(error?.status) || 500).json({ error: error.message || "Impossible de traiter le paiement." });
   }
 });
 

@@ -88,6 +88,7 @@ export interface Boutique {
   verificationSubmittedAt?: string;
   verificationReviewedAt?: string;
   verificationRejectionReason?: string;
+  subscription?: BoutiqueSubscription;
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +102,49 @@ export interface BoutiqueApplication {
   submittedAt: string;
   reviewedAt?: string;
   rejectionReason?: string;
+}
+
+// -------------------------------------------------------------
+// Abonnement boutique (paiement mensuel pour exercer sur StoreHub)
+// -------------------------------------------------------------
+
+export type SubscriptionStatus = 'none' | 'pending' | 'active' | 'expired' | 'suspended';
+export type SubscriptionPaymentMethod = 'bank_transfer' | 'chargily';
+export type SubscriptionPaymentStatus = 'pending' | 'approved' | 'rejected';
+
+export interface BoutiqueSubscription {
+  status: SubscriptionStatus;
+  plan: 'standard';
+  currentPeriodEnd?: string;
+  lastPaymentAt?: string;
+  lastPaymentMethod?: SubscriptionPaymentMethod;
+  updatedAt?: string;
+}
+
+export interface SubscriptionPayment {
+  id: string;
+  boutiqueId: string;
+  ownerId: string;
+  boutiqueName: string;
+  amountDzd: number;
+  method: SubscriptionPaymentMethod;
+  status: SubscriptionPaymentStatus;
+  submittedAt: string;
+  // Virement bancaire manuel
+  reference?: string;
+  proofUrl?: string;
+  proofPath?: string;
+  senderNote?: string;
+  // Chargily (paiement en ligne CIB / Edahabia)
+  chargilyCheckoutId?: string;
+  chargilyInvoiceId?: string;
+  // Revue administrateur
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
+  // Période couverte une fois approuvé
+  periodStart?: string;
+  periodEnd?: string;
 }
 
 export interface ProductImage {

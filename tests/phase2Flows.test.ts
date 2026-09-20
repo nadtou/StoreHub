@@ -174,7 +174,7 @@ test('2.4 — une réservation refuse rupture, mauvaise taille et mauvaise coule
   assert.match(getReservationSelectionError({ ...product, stock: 0 }, '39', 'Noir') || '', /plus disponible/i);
 });
 
-test('2.4 — la livraison décrémente le stock une seule fois et jamais sous zéro', () => {
+test('2.4 — le stock se décrémente à la livraison, se restaure au retour arrière', () => {
   assert.deepEqual(calculateDeliveredStock('en_cours', 'livre', 2, 1), {
     changed: true,
     remainingStock: 1,
@@ -183,9 +183,24 @@ test('2.4 — la livraison décrémente le stock une seule fois et jamais sous z
   assert.deepEqual(calculateDeliveredStock('livre', 'livre', 1, 1), { changed: false });
   assert.deepEqual(calculateDeliveredStock('en_attente', 'en_cours', 2, 1), { changed: false });
   assert.throws(() => calculateDeliveredStock('en_cours', 'livre', 0, 1), /Stock insuffisant/);
+
+  // La boutique gère la livraison manuellement : livre -> en_cours restaure le stock
+  // et rend l'article de nouveau disponible sans autorisation supplémentaire.
+  assert.deepEqual(calculateDeliveredStock('livre', 'en_cours', 0, 2), {
+    changed: true,
+    remainingStock: 2,
+    isAvailable: true,
+  });
+  assert.deepEqual(calculateDeliveredStock('livre', 'en_attente', 1, 1), {
+    changed: true,
+    remainingStock: 2,
+    isAvailable: true,
+  });
+
   assert.equal(isOrderStatusTransitionAllowed('en_attente', 'en_cours'), true);
   assert.equal(isOrderStatusTransitionAllowed('en_cours', 'livre'), true);
-  assert.equal(isOrderStatusTransitionAllowed('livre', 'en_cours'), false);
+  assert.equal(isOrderStatusTransitionAllowed('livre', 'en_cours'), true);
+  assert.equal(isOrderStatusTransitionAllowed('livre', 'en_attente'), true);
 });
 
 test('2.5 — un client ne peut écrire que dans son fil et sous son identité', () => {
